@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-11-04T04:12:00Z",
+  "updatedAt": "2026-11-04T10:10:00Z",
   "data_baseline": {
     "manifest_total_visible": 2145874,
     "records_including_hidden": 2149024,
@@ -38,14 +38,17 @@
     "artifact": "_site-data-backups/data.built-20261103T144749Z（构建产物，明文；site/data 已恢复为精确 2.1M）"
   },
   "last_deploy": {
-    "at": "2026-11-04T04:11:00Z",
-    "kind": "code-only (--skip-build)",
-    "cloudflare": "uploaded 5 files + _headers (13995 already), deployment bfbdeb28",
-    "cloudbase": "19 files 内容一致(已是最新)，实传 0 / 跳过 19",
-    "data": "unchanged 2145874 / 79",
-    "verified": "manifest 2145874/79; pako 200; CSP/referrer/x-frame 头生效"
+    "at": "2026-11-04T10:05:00Z",
+    "kind": "code-only (--skip-build)，三处同步 GitHub + Cloudflare + CloudBase",
+    "github": "push 8021db7..a98b370 main->main；含 630fe6d(build 须先问规约) + a98b370(第十一轮审查 52 文件)；远端快照经 codeload 校验含 render-guard.js 与 build_policy",
+    "cloudflare": "uploaded 29 files (13972 already), deployment 0eb755ce；门禁 14002 文件 / 2145874 / 79",
+    "cloudbase": "清单 29 个 → 实传 14 / 跳过 15（内容未变），0.1MB / 2s",
+    "data": "unchanged 2145874 / 79（两端 manifest 实测）",
+    "verified": "CF render-guard.js 200 (1213B), sw.js CACHE=shici-shell-v353；COS 新文件 09:52 更新；npm test 459 项 0 失败；preflight PASS"
   },
   "last_ops": {
+    "three_way_sync_2026_11_04_c": "三处同步完成：GitHub a98b370 / CF 0eb755ce / CloudBase 14 实传；数据零变化(214万/79)；新增 render-guard.js 与 3 组测试，npm test 459 项全绿",
+    "github_ssh_flaky_2026_11_04": "ssh.github.com:443 认证间歇性 Permission denied（连续测试 1 成功多失败）。绕过法：显式指定 IP 20.205.243.160 + core.sshCommand 带 -i/-o IdentitiesOnly，push 数次内可成；验证远端用 codeload tarball（raw.githubusercontent.com 不通）",
     "code_sync_2026_11_04_b": "代码更新(19 文件，含 _headers、vendor/pako.esm.mjs)双发完成；CF 5 文件+_headers，CloudBase 已最新；数据零变化",
     "proxy_fix_2026_11_04": "沙箱代理对外 502 → deploy-cf.sh 加 unset 代理走直连，部署恢复正常",
     "code_sync_2026_11_04": "代码更新(17 文件，含新增 tags.js)双发完成，数据零变化(214万/79)",
