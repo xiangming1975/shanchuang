@@ -72,7 +72,7 @@ npm test                   # 408 项，约 3 秒，零依赖
 |---|---|---|---|
 | **① Release 解包**（推荐） | 下载数据分卷，解第一个卷即自动串接 | 几分钟 | 见下方「数据快照」 |
 | **② 本地拷贝** | 同一台机器上把 `site/data/` 直接复制过来 | 几十秒 | 手上有备份（`site/data` 或 `../backup-json-20261103/`） |
-| **③ build 重建** | `npm run build` 从原始语料重新生成 | 3–7 分钟 + 恢复 3.2GB | **最后手段**：需 `../poetry-site-archive-20261027/` 的原始语料 |
+| **③ build 重建** | `bash etl/safe-build.sh`（唯一入口） | 十几分钟，产出明文 5.87GB，还要 `pack` + `gz` | **最后手段**：只在要改数据/加集合时用；本机源已齐（preflight 通过） |
 
 `build` 只在「要改数据 / 加集合」时才需要，单纯想跑起来不必走这条路。
 
@@ -105,14 +105,18 @@ Get-FileHash shanchuang-data-YYYYMMDD.7z.00* -Algorithm SHA256
 
 ### 如果要重建或改数据
 
+**构建的唯一入口是 `bash etl/safe-build.sh`**（自带 `ops/.build.lock`、备份 `site/data`、总量校验、失败回滚）。
+不要直接跑 `npm run build` 或 `node etl/build.js`——绕过锁和备份，正是 2026-11-03 把 214 万条重建成 47 万条的事故原因。
+
 ```bash
-npm run build   # etl/build.js      从原始语料重建 site/data（需先恢复 3.2GB 归档）
-npm run pack    # etl/pack-deploy-* 文件数 29,001 → 14,000（规避托管方 2 万文件上限）
-npm run gz      # etl/gzip-data-*   5.87GB → 2.7GB（.json.gz，前端透明解压）
+bash etl/safe-build.sh          # 锁 → preflight → 备份 → build → 校验 total → 失败回滚
+npm run pack -- --go            # 文件数 29,001 → 14,000（规避托管方 2 万文件上限）
+npm run gz -- --go              # 明文 5.87GB → .gz 2.7GB（前端透明解压）
 ```
 
-- 原始语料与 ETL 中间产物在 `../poetry-site-archive-20261027/`（2.0GB + 1.27GB），
-  用该目录下的 `restore.js` 搬回，`build.js` 缺输入时会直接打印恢复命令。
+- **构建产出的是明文 `site/data`（约 5.87GB）**，`pack` + `gz` 两步必须跑完才算回到可部署形态。
+- 本机 `etl/out/` 已有 **8.6GB 源**，`node etl/preflight.mjs` 可通过，`safe-build` 会真的跑全量构建
+  （十几分钟量级）。换机器时才需要从 `../poetry-site-archive-20261027/` 用 `restore.js` 搬回原料。
 - 数据源共 53 个（GitHub / Hugging Face / Kaggle / ModelScope / 站点采集），
   逐条清单与许可见 `HANDOFF.md` §6，线上镜像见 `#/src` 页。
 

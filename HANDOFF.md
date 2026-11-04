@@ -2046,6 +2046,18 @@ siku/rhyme/citunes/shihua/mengxue_cht/jingbu_cht/tang300ext/pdb 新补遗等）�
 ④ 以后推送：`git push` 即可（`main` 已跟踪 `origin/main`）。若换机器，需重新生成密钥并把公钥
    加到 GitHub，再写同样的 `~/.ssh/config`。
 
+**2026-11-04（更正：构建源已恢复，旧"47 万"警告作废）**：
+`ops/state.json` 的 `last_build` 记 2026-11-03T15:28Z 全量构建成功（**2,149,024 条 / 79 集合**）。
+今日实测 `node etl/preflight.mjs` **全部 PASS**，`etl/out/` 现有 **8.6GB 源**
+（`poems3.jsonl` 212MB、`poems4.jsonl` 4.1GB、`poems-extra79.jsonl` 3.6GB 等）。
+因此：
+- 上文 2026-11-03 那条「本地 build 只出 47.2 万 / 源被缩减」是**当时状态，已经过期**，不要照它判断；
+  判断依据统一用 `node etl/preflight.mjs` 与 `ops/state.json` 的 `last_build`。
+- `bash etl/safe-build.sh` 现在会**真的跑全量构建**（不是空跑保护），产物是**明文 5.87GB**，
+  必须 `pack → gz` 才回到 2.7GB 可部署形态。所以独占规约（§0）比以往更要紧。
+- `AGENTS.md` §0/§5、`README.md` 的「快速开始」「如果要重建或改数据」已同步为「唯一入口 safe-build.sh」，
+  不再出现「不要跑 npm run build」这种会让人绕过锁直接 `node etl/build.js` 的模糊措辞。
+
 
 
 
