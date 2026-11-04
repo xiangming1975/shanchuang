@@ -66,12 +66,20 @@ npm test                   # 407 项，约 3 秒，零依赖
 
 ```powershell
 # 打包（-mx=0 = 存储模式：内部已是 .json.gz，二次压缩无收益）
+# 在仓库根执行，归档内路径为 site/data/...，解压后与仓库结构一致
 7z a -mx=0 -v1400m shanchuang-data-YYYYMMDD.7z site\data
-7z x shanchuang-data-YYYYMMDD.7z.001 -o.     # 恢复：解第一个卷即可
+
+# 恢复：两个卷放同目录，解第一个即自动串接；解到仓库根就得到 site/data/
+7z x shanchuang-data-YYYYMMDD.7z.001 -o.
+
+# 校验（对照 release notes 记录的 SHA256）
+Get-FileHash shanchuang-data-YYYYMMDD.7z.00* -Algorithm SHA256
 ```
 
-上传用 `gh release upload`（网页拖拽也行，但 CLI 可续传、可脚本化）。
-每个卷请附 SHA256，并在 release notes 写明数据许可见 [LICENSE-DATA.md](LICENSE-DATA.md)。
+- 单卷 1.4GB：GitHub 单个 Release 资产上限 **2 GiB**，留足余量。
+- 上传：网页 Releases → Draft a new release → 拖两个卷；或用 `gh release upload`（可续传）。
+- **release notes 里必须写两样**：每个卷的 SHA256，以及数据许可见
+  [LICENSE-DATA.md](LICENSE-DATA.md)（分层许可，整库不可整体再许可）。
 
 ### 如果要重建或改数据
 
