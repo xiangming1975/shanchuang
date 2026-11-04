@@ -2030,6 +2030,22 @@ siku/rhyme/citunes/shihua/mengxue_cht/jingbu_cht/tang300ext/pdb 新补遗等）�
 ⑥ 遗留：历史瘦身未做；若日后要推 GitHub，建议 `git filter-repo --path site/data --invert-paths`
    后强推，或删 `.git` 重建（提交历史价值不大时更省事）。
 
+**2026-11-04（推上 GitHub：xiangming1975/shanchuang）**：
+① 做法：删掉旧 `.git` 重建（旧历史里 13,038 个数据分块约 200MB，没有保留价值）。
+   `git init -b main` → 仓库级身份 `xiangming1975 <xiangming1975@users.noreply.github.com>` →
+   首次提交 **6c6da46**（220 文件 / 8.7MB / `.git` 6.29MB）→ 推送成功（7.5 秒）。
+② **网络现实**：本机 `github.com:443`、`api.github.com`、`github.com:22` **全部不通**（curl 返回 000），
+   只有 **`ssh.github.com:443` 可达**。所以：
+   - 推送走 SSH over 443：`~/.ssh/config` 里 `Host github.com → HostName ssh.github.com, Port 443`
+   - remote 照常写 `git@github.com:xiangming1975/shanchuang.git`，自动走 443
+   - **无法用 API 建仓库**（`api.github.com` 不通，且无 `gh` CLI），仓库只能在网页新建
+   - 同理 `wrangler` 那类依赖 `github.com` 网页域名的流程也不可用
+③ **CRLF**：本机系统级 `core.autocrlf=true`（PortableGit 自带），工作区里有 27 个 `etl/*.js` 是 CRLF。
+   已加 `.gitattributes`：`* text=auto eol=lf` + `*.gz/woff2/png/zip binary`（`.gz` 必须标 binary，
+   否则压缩流会被当文本转行而损坏）。索引里 CRLF 已归零。
+④ 以后推送：`git push` 即可（`main` 已跟踪 `origin/main`）。若换机器，需重新生成密钥并把公钥
+   加到 GitHub，再写同样的 `~/.ssh/config`。
+
 
 
 
