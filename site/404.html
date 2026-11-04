@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>未找到 · 山窗</title>
+<!-- 有这个文件，Cloudflare Pages 才会对「不存在的路径」返回 404，而不是回退成
+     index.html + 200。数据文件缺失时那种 200 会把首页 HTML 当成 JSON 塞给前端，
+     极难排查（2026-11-03 踩过）。 -->
+<style>
+  html,body { margin:0; height:100%; background:#f6f1e7; color:#3a2c22;
+    font-family: "Noto Serif SC","Songti SC",serif; display:grid; place-items:center; }
+  .box { text-align:center; padding:2rem; }
+  .big { font-size:3rem; color:#8c2f27; letter-spacing:.2em; }
+  p { color:#6b5a4a; line-height:1.9; margin:.8rem 0 1.6rem; }
+  a { color:#8c2f27; text-decoration:none; border-bottom:1px solid rgba(140,47,39,.35); }
+</style>
+<div class="box">
+  <div class="big">无处寻</div>
+  <p>此页不存，或数据尚未就位。</p>
+  <a href="/">回山窗首页</a>
+</div>
+</html>

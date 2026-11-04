@@ -1,0 +1,10 @@
+# Cloudflare Pages 安全响应头（第十轮 🟠-4，2026-11-04）
+# 与本地开发服务器 server.js 的 SAFE 常量同口径，改一处必须同步另一处。
+# CSP 只放行唯一内联脚本（index.html 启动错误收集器）的 sha256；拼音库/pako 均为同源 vendor 资源。
+# HSTS 不设：*.pages.dev 顶层域已强制 HTTPS，且共享子域上 HSTS 锁死风险大于收益。
+
+/*
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: no-referrer
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'sha256-GrKmPj3BRylir2flCPtLks3nkOfu+GVW2dZTyr0HaDY='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'

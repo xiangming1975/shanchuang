@@ -1,0 +1,14 @@
+# 换行统一：仓库内一律 LF。
+# 本机系统级 core.autocrlf=true（PortableGit 自带），不固定的话
+# 文本文件会被改写成 CRLF，日后 diff 里全是无意义的整行变更。
+* text=auto eol=lf
+
+# 二进制：禁止换行转换、禁止文本 diff（.gz 内部是压缩流，被当文本处理会损坏）
+*.gz    binary
+*.woff2 binary
+*.woff  binary
+*.png   binary
+*.ico   binary
+*.jpg   binary
+*.zip   binary
+*.7z    binary

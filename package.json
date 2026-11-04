@@ -1,0 +1,16 @@
+{
+  "name": "shici-site",
+  "version": "1.0.0",
+  "private": true,
+  "description": "诗词集：静态站点（ETL + 前端），零依赖 Node 本地服务器",
+  "license": "MIT",
+  "//license": "本字段仅指站点代码；数据为分层许可，见 LICENSE-DATA.md",
+  "scripts": {
+    "serve": "node server.js",
+    "build": "node etl/build.js",
+    "pack": "node etl/pack-deploy-20261103.mjs",
+    "gz": "node etl/gzip-data-20261103.mjs",
+    "test": "node tests/pure.test.mjs && node tests/rules.test.mjs && node tests/shell.test.mjs && node tests/state.test.mjs && node tests/lunar.test.mjs && node tests/zh.test.mjs",
+    "font": "%USERPROFILE%\\.cache\\font-probe\\venv\\Scripts\\python.exe etl/build-font.py"
+  }
+}

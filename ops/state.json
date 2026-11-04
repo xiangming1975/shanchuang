@@ -1,0 +1,46 @@
+{
+  "updatedAt": "2026-11-04T04:12:00Z",
+  "data_baseline": {
+    "manifest_total_visible": 2145874,
+    "records_including_hidden": 2149024,
+    "collections": 79,
+    "rule": "以 manifest.total=2145874(214万) 为基线；低于此值视为事故，禁止发布"
+  },
+  "build": {
+    "script": "etl/build.js",
+    "collections": 79,
+    "sources": ["poems3.jsonl","poems-ingest.jsonl","poems-niu.jsonl","poems-fu.jsonl","poems-keben.jsonl","poems-buchong.jsonl","poems-extra79.jsonl"],
+    "expected_records": 2149024,
+    "memory": "names/标签/朝代索引已改流式(eachRow)，不再把全库读进内存；safe-build 另设 NODE_OPTIONS 堆上限兜底"
+  },
+  "deploy": {
+    "cloudflare": "shanchuang.pages.dev (wrangler pages deploy site)",
+    "cloudbase": "COS mirror (cosfix/diff.mjs + up-batch.mjs，已加 MD5 内容去重)",
+    "note": "沙箱会注入对外 502 的代理；deploy-cf.sh 已 unset 代理走直连（本机 TCP443 可达 CF）"
+  },
+  "concurrency": {
+    "rule": "同一时刻只允许一个会话 build/deploy；统一走 etl/safe-build.sh（自带 ops/.build.lock，时间戳判定）",
+    "readonly_ok": "其它会话可读文件、改代码、跑 git，但不得构建/发布"
+  },
+  "last_build": {
+    "at": "2026-11-03T15:28:00Z",
+    "total": 2149024,
+    "collections": 79,
+    "result": "BUILD_OK，safe-build 全链跑通（锁→预检→备份→构建→校验→回滚就绪）",
+    "artifact": "_site-data-backups/data.built-20261103T144749Z（构建产物，明文；site/data 已恢复为精确 2.1M）"
+  },
+  "last_deploy": {
+    "at": "2026-11-04T04:11:00Z",
+    "kind": "code-only (--skip-build)",
+    "cloudflare": "uploaded 5 files + _headers (13995 already), deployment bfbdeb28",
+    "cloudbase": "19 files 内容一致(已是最新)，实传 0 / 跳过 19",
+    "data": "unchanged 2145874 / 79",
+    "verified": "manifest 2145874/79; pako 200; CSP/referrer/x-frame 头生效"
+  },
+  "last_ops": {
+    "code_sync_2026_11_04_b": "代码更新(19 文件，含 _headers、vendor/pako.esm.mjs)双发完成；CF 5 文件+_headers，CloudBase 已最新；数据零变化",
+    "proxy_fix_2026_11_04": "沙箱代理对外 502 → deploy-cf.sh 加 unset 代理走直连，部署恢复正常",
+    "code_sync_2026_11_04": "代码更新(17 文件，含新增 tags.js)双发完成，数据零变化(214万/79)",
+    "build_capability_restored_2026_11_03": "build.js 79 集合 + poems-extra79.jsonl；流式改造后 2.1M 可稳定构建（safe-build 实测 BUILD_OK）"
+  }
+}

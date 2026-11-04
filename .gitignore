@@ -1,0 +1,72 @@
+# ============================================================
+# 山窗 · 版本库分层规则（2026-11-04 重写）
+#
+# 原则：进仓库 = 源码 / 脚本 / 配置 / 文档 / <1MB 的源数据
+#       不进   = 产物 / 存档备份 / 凭据 / 依赖 / 大二进制
+#
+# site/data 是 build 的产物（build → pack → gz 三步生成，2.7GB / 约 1.4 万文件），
+# 线上由 Cloudflare Pages 托管，不随仓库走；只保留 tests 真正在读的 4 张小表。
+# ============================================================
+
+# ---------- 1. 数据产物：只留测试依赖的 4 张小表 ----------
+/site/data/*
+!/site/data/idx
+/site/data/idx/*
+!/site/data/idx/pingze.json
+!/site/data/idx/t2s.json.gz
+!/site/data/idx/s2t.json.gz
+!/site/data/idx/s2td.json.gz
+
+# ---------- 2. 构建中间产物与原始语料（可重新获取） ----------
+/etl/out/
+/etl/tmp/
+/etl/downloads/
+/downloads/
+/data_2026-10-29/
+/dataset-kit/
+/epub-extraction/
+/etl/card-*.png
+/etl/card-preview/
+/etl/*.tmp
+
+# ---------- 3. 依赖 ----------
+/node_modules/
+/etl/node_modules/
+
+# ---------- 4. 存档与备份（纯本地，绝不入库） ----------
+/archive/
+/_data_backup_20261102/
+/_site-data-backups/
+/_trash_bak_20261101/
+/backup-*/
+/backup_*/
+/audit-out/
+/audit-out-prededup/
+/audit-dedup-out/
+/backup_html_2026-10-31/
+
+# ---------- 5. 凭据（绝不入库） ----------
+cf-token.txt
+.cf-token
+*.cf-token
+
+# ---------- 6. 根目录散落产物 ----------
+# 各类一次性报告/清单 JSON（package.json 例外）
+/*.json
+!/package.json
+!/package-lock.json
+/*.log
+/*.zip
+/_shot_*.png
+
+# ---------- 7. 系统与编辑器 ----------
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
+.workbuddy/
+
+# 预生成朗读音频（190MB+ mp3，git 不适合存二进制）
+/site/audio/
