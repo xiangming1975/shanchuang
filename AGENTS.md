@@ -32,7 +32,7 @@
 
 1. `HANDOFF.md` — 交接文档，**最重要**。§0 是多会话协作规约，§6 是 53 个数据源与许可，§12 是按日期的改动日志（踩过什么坑、为什么这么选）。
 2. `README.md` — 结构、许可、发布、数据恢复。
-3. `site/js/` — 前端源码；`tests/` — 测试（408 项，零依赖，3 秒跑完）。
+3. `site/js/` — 前端源码；`tests/` — 测试（当前 408 项，零依赖，3 秒跑完）。**这个数字会随测试增删而变，一律以 `npm test` 的实际输出为准**，不要拿本手册的数字当断言。
 
 ---
 
@@ -108,7 +108,7 @@ npx --yes wrangler@latest pages deploy site --project-name shanchuang --branch m
 
 ## 8. 完工标准（四项都满足才算做完）
 
-1. `npm test` 全绿（408 项）。
+1. `npm test` 全绿（当前 408 项；**数量以实际输出为准**，只要 0 失败即可）。
 2. `git status` 干净，没有遗漏或多余文件。
 3. 远端与本地一致：`git ls-remote origin | grep main` 与 `git rev-parse HEAD` 相同。
 4. 若改了站点行为，线上抽查一次（用浏览器或 curl，看目标页真的变对了）。
