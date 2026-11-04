@@ -1,7 +1,8 @@
 // 页面：朝代
 // #/d        → 朝代概览（7 个分组，按时代先后排）
 // #/dy/<朝代> → 该朝代作品列表（id 分片懒加载，每片 2 万条）
-import { app, topbar, rowLink, emptyHtml } from '../vcommon.js';
+import { app, topbar, rowLink, emptyHtml, safeDecode } from '../vcommon.js';
+import { setAppHTML, isCurrent, currentRenderSeq } from '../render-guard.js';
 import { loadRowsByIds, dedupeRows } from './list.js';
 import { getDynIndex, getDynChunk, prefetchPoems, clearNavCtx } from '../store.js';
 import { pagedList } from './paged.js';
@@ -10,17 +11,18 @@ import { zhShow } from '../fn.js';
 
 const PAGE = 60;
 
-async function dynIndexView() {
+async function dynIndexView(seg, seq = currentRenderSeq()) {
   clearNavCtx();   // 朝代页暂不入队（列表即物理集合顺序），进来先退出阅读队列（2026-11-01 navCtx）
-  app.innerHTML = topbar('按朝代', { back: true }) + '<div class="loading"></div>';
+  setAppHTML(seq, topbar('按朝代', { back: true }) + '<div class="loading"></div>');
   let data = null;
   try { data = await getDynIndex(); } catch { data = null; }
+  if (!isCurrent(seq)) return;
   if (!data || !Array.isArray(data.rows) || !data.rows.length) {
-    app.innerHTML = topbar('按朝代', { back: true }) + emptyHtml('空', '朝代索引未就绪，请刷新重试');
+    setAppHTML(seq, topbar('按朝代', { back: true }) + emptyHtml('空', '朝代索引未就绪，请刷新重试'));
     return;
   }
   const total = data.rows.reduce((s, r) => s + r.c, 0);
-  app.innerHTML = topbar('按朝代', { back: true, extra: `<span class="act">${data.rows.length} 个时段</span>` }) + `
+  setAppHTML(seq, topbar('按朝代', { back: true, extra: `<span class="act">${data.rows.length} 个时段</span>` }) + `
     <div class="card">
       <h2>朝代</h2>
       <div class="section-tip" style="margin:4px 0 0">共 ${total.toLocaleString()} 篇，按时代先后排</div>
@@ -28,32 +30,32 @@ async function dynIndexView() {
     <div class="list">
       ${data.rows.map(r => `<a class="row" href="#/dy/${encodeURIComponent(r.k)}">
         <span class="rt">${esc(zhShow(r.k))}</span><span class="ra">${r.c.toLocaleString()} 篇</span></a>`).join('')}
-    </div>`;
+    </div>`);
 }
 
-async function dynView(seg) {
+async function dynView(seg, seq = currentRenderSeq()) {
   clearNavCtx();   // 朝代页暂不入队（2026-11-01 navCtx）
-  let key = '';
-  try { key = decodeURIComponent(seg[0] || ''); } catch { key = seg[0] || ''; }
-  app.innerHTML = topbar(zhShow(key) || '朝代', { back: true }) + '<div class="loading"></div>';
+  const key = safeDecode(seg[0] || '');
+  setAppHTML(seq, topbar(zhShow(key) || '朝代', { back: true }) + '<div class="loading"></div>');
   let meta = null;
   try {
     const data = await getDynIndex();
     meta = (data.rows || []).find(r => r.k === key) || null;
   } catch { meta = null; }
+  if (!isCurrent(seq)) return;
   if (!meta) {
-    app.innerHTML = topbar(zhShow(key) || '朝代', { back: true }) +
-      emptyHtml('空', '没有这个朝代<br><a href="#/d" style="color:var(--accent)">按朝代浏览</a>');
+    setAppHTML(seq, topbar(zhShow(key) || '朝代', { back: true }) +
+      emptyHtml('空', '没有这个朝代<br><a href="#/d" style="color:var(--accent)">按朝代浏览</a>'));
     return;
   }
 
-  app.innerHTML = topbar(zhShow(meta.k), { back: true, extra: `<span class="act">${meta.c.toLocaleString()} 篇</span>` }) + `
+  setAppHTML(seq, topbar(zhShow(meta.k), { back: true, extra: `<span class="act">${meta.c.toLocaleString()} 篇</span>` }) + `
     <div class="card">
       <h2>${esc(zhShow(meta.k))}</h2>
       <div class="section-tip" style="margin:4px 0 0">共 ${meta.c.toLocaleString()} 篇 · 按收录顺序</div>
     </div>
     <div class="list" id="dyn-list"><div class="loading"></div></div>
-    <div style="text-align:center;margin:14px 0"><button class="set-toggle hidden" id="dyn-more">加载更多</button></div>`;
+    <div style="text-align:center;margin:14px 0"><button class="set-toggle hidden" id="dyn-more">加载更多</button></div>`);
 
   const listEl = document.getElementById('dyn-list');
   const moreBtn = document.getElementById('dyn-more');

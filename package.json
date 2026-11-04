@@ -7,10 +7,12 @@
   "//license": "本字段仅指站点代码；数据为分层许可，见 LICENSE-DATA.md",
   "scripts": {
     "serve": "node server.js",
-    "build": "node etl/build.js",
+    "build": "bash etl/safe-build.sh",
+    "//build:raw": "仅供调试：绕过原子锁/preflight/备份/校验/回滚，禁止直接用于发布；发布一律走 bash etl/safe-build.sh --deploy-ready",
+    "build:raw": "node etl/build.js",
     "pack": "node etl/pack-deploy-20261103.mjs",
     "gz": "node etl/gzip-data-20261103.mjs",
-    "test": "node tests/pure.test.mjs && node tests/rules.test.mjs && node tests/shell.test.mjs && node tests/state.test.mjs && node tests/lunar.test.mjs && node tests/zh.test.mjs",
+    "test": "node tests/pure.test.mjs && node tests/rules.test.mjs && node tests/shell.test.mjs && node tests/state.test.mjs && node tests/lunar.test.mjs && node tests/zh.test.mjs && node tests/router.test.mjs && node tests/store-fetch.test.mjs && node tests/etl-idempotency.test.mjs",
     "font": "%USERPROFILE%\\.cache\\font-probe\\venv\\Scripts\\python.exe etl/build-font.py"
   }
 }

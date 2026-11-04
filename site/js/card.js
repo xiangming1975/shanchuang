@@ -380,7 +380,7 @@ async function makeShareCard(poem, displayLines, title) {
   pop.innerHTML = '<div class="fn-card" style="text-align:center;max-height:78vh"><div class="fn-term">诗词卡片</div>' +
     '<img src="' + url + '" alt="诗词卡片" style="max-width:100%;max-height:46vh;border:1px solid var(--line);border-radius:10px">' +
     '<div style="display:flex;gap:8px;margin-top:12px;justify-content:center;flex-wrap:wrap">' +
-    '<a class="fn-close" style="text-decoration:none;display:inline-block" href="' + url + '" download="shici-' + poem.i + '.jpg">保存图片</a>' +
+    '<a class="fn-close" style="text-decoration:none;display:inline-block" href="' + url + '" download="shici-' + encodeURIComponent(String(poem.i)) + '.jpg">保存图片</a>' +
     '<button class="fn-close" id="card-again">换一张</button>' +
     '<button class="fn-close" id="card-close">关闭</button></div>' +
     '<div class="section-tip" style="margin-top:8px">长按图片也可保存/分享（微信里长按直接转发）</div></div>';

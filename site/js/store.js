@@ -1,6 +1,34 @@
 // 数据层：manifest 定位 + IndexedDB 缓存
 const DB_NAME = 'shici-db', STORE = 'kv';
+const DATAV_LS_KEY = 'shici-datav';
+const FETCH_TIMEOUT_MS = 12000;
+const MAX_CACHE_TEXT = 4 * 1024 * 1024;   // 单个 txt: 缓存上限，避免几 MB 分片撑爆配额
+const MAX_TXT_ENTRIES = 600;
+const FAIL_RETRY_MS = 30000;              // 索引表加载失败后的重试间隔
 let dbPromise = null;
+let txtWrites = 0;
+// 分块内存 LRU（同会话二次点击零开销）。提前声明：setDataVer 要在版本变更时清它。
+const chunkMem = new Map();
+
+// 第十一轮 A-1：版本号不能只靠「本次启动能否拉到 manifest」。上次成功的 v 落
+// localStorage，离线启动时也能用它命中 IDB 里的 txt:v…: 键。
+function lsRawGet(k) { try { return localStorage.getItem(k); } catch { return null; } }
+function lsRawSet(k, v) { try { localStorage.setItem(k, v); } catch {} }
+
+// 第十一轮 A-2：三处裸 fetch 统一加超时。AbortController 不可用时退回裸 fetch。
+function fetchWithTimeout(url, opts, ms) {
+  if (typeof AbortController === 'undefined') return fetch(url, opts || {});
+  const ctl = new AbortController();
+  const timer = setTimeout(() => { try { ctl.abort(); } catch {} }, ms || FETCH_TIMEOUT_MS);
+  return fetch(url, Object.assign({}, opts || {}, { signal: ctl.signal }))
+    .finally(() => clearTimeout(timer));
+}
+// 第十一轮 C-2/C-5：数据层失败不再静默吞掉，至少留一条可诊断线索。
+function warnData(where, e) {
+  const msg = '[' + where + '] ' + ((e && e.message) || String(e));
+  try { console.warn(msg); } catch {}
+  try { if (typeof window !== 'undefined' && window.__bootErrs) window.__bootErrs.push('D:' + msg.slice(0, 200)); } catch {}
+}
 
 function openDB() {
   if (dbPromise) return dbPromise;
@@ -16,12 +44,13 @@ function openDB() {
         const req2 = indexedDB.open(DB_NAME, (db ? db.version : 1) + 1);
         req2.onupgradeneeded = () => { const db2 = req2.result; if (!db2.objectStoreNames.contains(STORE)) db2.createObjectStore(STORE); };
         req2.onsuccess = () => { req2.result.onversionchange = () => req2.result.close(); res(req2.result); };
-        req2.onerror = () => rej(req2.error);
+        req2.onerror = () => { dbPromise = null; rej(req2.error); };
         return;
       }
       res(db);
     };
-    req.onerror = () => rej(req.error);
+    // 第十一轮 C-3：失败后必须清掉缓存的 rejected Promise，否则整会话不再重试。
+    req.onerror = () => { dbPromise = null; rej(req.error); };
   });
   return dbPromise;
 }
@@ -45,25 +74,42 @@ async function idbGet(key) {
 }
 async function idbSet(key, val) {
   try {
-    const db = await openDB();
+    // 第十一轮 C-3：写路径同样要有 3 秒兜底；原先「打开与读写都加超时」只覆盖了读。
+    const db = await withTimeout(openDB(), 3000, null);
+    if (!db) return;
     await new Promise((res, rej) => {
       const tx = db.transaction(STORE, 'readwrite');
       tx.objectStore(STORE).put(val, key);
       tx.oncomplete = () => res();
       tx.onerror = () => rej(tx.error);
     });
-  } catch {}
+    if (key.startsWith('txt:') && ++txtWrites % 100 === 0) cleanupStale(MAX_TXT_ENTRIES);
+  } catch (e) {
+    // 配额耗尽不能只表现为「缓存一直不生效、每次都要联网」。
+    if (e && (e.name === 'QuotaExceededError' || /quota/i.test(String(e && e.message)))) {
+      noteStorageFail('idb-quota', e, '离线缓存空间已满，部分内容需要联网才能读。可清理浏览数据后重试。');
+    }
+  }
 }
 
 const inflight = new Map();
-let DATAV = ''; // 数据版本号（来自 manifest.v），重建后自动失效旧缓存
-export function setDataVer(v) { DATAV = v ? 'v' + v + ':' : ''; }
+// 第十一轮 A-1：启动时先用上次成功的版本号初始化，离线也能读 IDB。
+let DATAV = (() => { const v = lsRawGet(DATAV_LS_KEY); return v ? 'v' + v + ':' : ''; })();
+export function setDataVer(v) {
+  DATAV = v ? 'v' + v + ':' : '';
+  if (v) lsRawSet(DATAV_LS_KEY, String(v));
+  // 版本变更后内存分块必须失效，否则长会话一直返回旧正文（第十一轮 P3）
+  if (chunkMem) chunkMem.clear();
+}
 export function getDataVer() { return DATAV; }
-async function cleanupStale() {
+// 版本变化时清旧前缀；传 maxKeep 时同版本条目也做一次 LRU 式裁剪。
+async function cleanupStale(maxKeep) {
   if (!DATAV) return;
   try {
-    const db = await openDB();
+    const db = await withTimeout(openDB(), 3000, null);
+    if (!db) return;
     await new Promise((res) => {
+      const keep = [];
       const tx = db.transaction(STORE, 'readwrite');
       const store = tx.objectStore(STORE);
       const req = store.openCursor();
@@ -71,10 +117,20 @@ async function cleanupStale() {
         const cur = req.result;
         if (!cur) return;
         const k = cur.key;
-        if (typeof k === 'string' && k.startsWith('txt:') && !k.startsWith('txt:' + DATAV)) store.delete(k);
+        if (typeof k === 'string' && k.startsWith('txt:')) {
+          if (!k.startsWith('txt:' + DATAV)) store.delete(k);
+          else if (maxKeep) keep.push(k);
+        }
         cur.continue();
       };
-      tx.oncomplete = () => res();
+      tx.oncomplete = () => {
+        if (!maxKeep || keep.length <= maxKeep) { res(); return; }
+        const tx2 = db.transaction(STORE, 'readwrite');
+        const st2 = tx2.objectStore(STORE);
+        keep.slice(0, keep.length - maxKeep).forEach(k => st2.delete(k));
+        tx2.oncomplete = () => res();
+        tx2.onerror = () => res();
+      };
       tx.onerror = () => res();
     });
   } catch {}
@@ -85,71 +141,110 @@ async function cleanupStale() {
 // Content-Type 判真假，不能只看 resp.ok —— 否则会把首页 HTML 当数据去 JSON.parse。
 // 测试垫片 / 极简 fetch 实现可能没有 headers，取不到就当作「不是 HTML」
 const ctOf = (r) => (r.headers && typeof r.headers.get === 'function') ? (r.headers.get('content-type') || '') : '';
-const GZ_OK = typeof DecompressionStream !== 'undefined';
 async function gzToText(buf) {
-  if (GZ_OK) {
-    const ds = new DecompressionStream('gzip');
-    return await new Response(new Response(buf).body.pipeThrough(ds)).text();
+  // 第十一轮 C-1：DecompressionStream 存在 ≠ 一定可用（构造 / pipeThrough 都可能抛）。
+  // 两条解压路径必须互备：原生失败就切 vendor pako，都失败才抛带 cause 的错误。
+  // 老浏览器（Safari <16.4）与异常数据下，第十轮 🟠-5 修好的 pako 兜底才真能生效。
+  let nativeErr = null;
+  if (typeof DecompressionStream !== 'undefined') {
+    try {
+      const ds = new DecompressionStream('gzip');
+      return await new Response(new Response(buf).body.pipeThrough(ds)).text();
+    } catch (e) { nativeErr = e; }
   }
-  // 老浏览器（Safari <16.4）回退本地 vendor pako（第十轮 🟠-5，2026-11-04）：
-  // 原先依赖 jsdelivr CDN——离线断网解不开全部 gzip 数据、向 CDN 暴露访问、
-  // 供应链投毒三重风险。现 vendor 化（site/vendor/pako.esm.mjs，226KB）并进 SW SHELL。
-  const pako = await import('../vendor/pako.esm.mjs');
-  return pako.ungzip(new Uint8Array(buf), { to: 'string' });
+  try {
+    const pako = await import('../vendor/pako.esm.mjs');
+    return pako.ungzip(new Uint8Array(buf), { to: 'string' });
+  } catch (e) {
+    const err = new Error('gzip 解压失败：' + ((e && e.message) || e) +
+      (nativeErr ? '（原生解压：' + ((nativeErr && nativeErr.message) || nativeErr) + '）' : ''));
+    err.cause = nativeErr || e;
+    throw err;
+  }
 }
 export async function cachedText(url, noCache) {
-  // DATAV 未就绪（离线首访 manifest 拉不到）时完全不读写 IDB：
-  // 无版本键会与正常版本键并存，白占缓存空间还永不清理（评审 N8）。
+  // DATAV 未就绪时完全不读写 IDB：无版本键会与正常版本键并存，白占空间还永不清理。
+  // 第十一轮 P3：inflight 键必须含版本与缓存模式，否则跨版本 / noCache 并发会串味。
+  const key = url + '|' + DATAV + '|' + (noCache ? '1' : '0');
   if (!noCache && DATAV) {
     const hit = await idbGet('txt:' + DATAV + url);
     // 防御：曾经把 SPA 回退返回的 index.html 也缓存进去了（首字符 '<'），
     // 这类污染条目一律当未命中，否则修好网络层也会被旧缓存继续坑。
     if (hit !== undefined && !(typeof hit === 'string' && hit.charCodeAt(0) === 60)) return hit;
   }
-  if (inflight.has(url)) return inflight.get(url);
+  if (inflight.has(key)) return inflight.get(key);
   const p = (async () => {
     // 数据文件带版本参数：重建后 URL 变化，HTTP 缓存自然失效
     const q = DATAV ? (url.indexOf('?') < 0 ? '?v=' + DATAV : '&v=' + DATAV) : '';
-    let text;
+    let text, gzErr = null;
     try {
       const gzUrl = url.replace(/(\?|$)/, '.gz$1');
-      const resp = await fetch(gzUrl + q);
+      const resp = await fetchWithTimeout(gzUrl + q);
       const ct = ctOf(resp);
       if (!resp.ok || /^text\/html/i.test(ct)) throw new Error('no gz: ' + resp.status + ' ' + ct);
       text = await gzToText(await resp.arrayBuffer());
-    } catch (gzErr) {
-      // 回退未压缩原文（过渡期 / 少数保留明文的表）
-      const resp = await fetch(url + q);
-      const ct = ctOf(resp);
-      if (!resp.ok || /^text\/html/i.test(ct)) throw gzErr;
-      text = await resp.text();
+    } catch (e) { gzErr = e; }
+    if (text === undefined) {
+      // 回退未压缩原文（过渡期 / 少数保留明文的表）。两条路都失败时抛带原因的错，
+      // 不再把解压失败伪装成「作品不存在」（第十一轮 C-5）。
+      try {
+        const resp = await fetchWithTimeout(url + q);
+        const ct = ctOf(resp);
+        if (!resp.ok || /^text\/html/i.test(ct)) throw new Error('no plain: ' + resp.status + ' ' + ct);
+        text = await resp.text();
+      } catch (e) {
+        const err = new Error('数据加载失败：' + url + '（' + ((gzErr && gzErr.message) || '?') +
+          ' / ' + ((e && e.message) || e) + '）');
+        err.cause = gzErr || e;
+        throw err;
+      }
     }
-    // 落库不等待（2026-10-31）：几 MB 的句库/全文分片 fetch 完就先交给页面，
-    // 写缓存在后台走完（idbSet 内部全吞错，不会冒未处理拒绝）。
-    // noCache（getPingze/getCitpl/getGenre）只绕读也绕写：原先只绕读，
-    // 写进去的键永不再读，白占 IDB 配额（第十轮 🟡-1，2026-11-04）。
-    if (DATAV && !noCache) idbSet('txt:' + DATAV + url, text);
+    // 落库不等待；noCache 三张表只绕读也绕写（第十轮 🟡-1）。
+    // 单条超过 MAX_CACHE_TEXT 不入 IDB，避免几 MB 分片撑爆配额。
+    if (DATAV && !noCache && text.length <= MAX_CACHE_TEXT) idbSet('txt:' + DATAV + url, text);
     return text;
-  })().finally(() => inflight.delete(url));
-  inflight.set(url, p);
+  })().finally(() => inflight.delete(key));
+  inflight.set(key, p);
   return p;
 }
 async function cachedJSON(url) { return JSON.parse(await cachedText(url)); }
 
-// ---------- manifest（每次启动直连网络取最新版本号，不再走 IDB 缓存） ----------
-let manifestCache = null;
+// ---------- manifest（条件请求 + IDB 兜底，第十一轮 A-1 / C-9 / F-1） ----------
+// 不再带 ?_= 时间戳：那会禁用所有 HTTP 缓存，每次冷启动都白下 229KB。
+// 改用 cache:'no-cache'（强制校验、允许 304），内容没变时浏览器只回很小的 304。
+let manifestCache = null, manifestPromise = null;
 export async function getManifest() {
-  if (!manifestCache) {
-    const resp = await fetch('data/manifest.json?_=' + Date.now());
-    if (!resp.ok) throw new Error('manifest 加载失败');
-    const m = await resp.json();
-    if (m.v && getDataVer() !== 'v' + m.v + ':') {
-      setDataVer(m.v);
-      cleanupStale();
+  if (manifestCache) return manifestCache;
+  if (manifestPromise) return manifestPromise;   // 并发调用共用一次请求（C-9）
+  manifestPromise = (async () => {
+    try {
+      const resp = await fetchWithTimeout('data/manifest.json', { cache: 'no-cache' });
+      if (!resp.ok) throw new Error('manifest 加载失败: ' + resp.status);
+      const m = await resp.json();
+      if (m.v && getDataVer() !== 'v' + m.v + ':') {
+        setDataVer(m.v);
+        cleanupStale();
+      }
+      manifestCache = m;
+      // 无版本键：cleanupStale 只清 txt: 前缀，这份 manifest 会一直留到下次成功。
+      idbSet('manifest:latest', JSON.stringify(m));
+      return m;
+    } catch (e) {
+      // 离线时用上次成功的 manifest 兜底，让 locate()/colIndexOf() 也能工作。
+      // 没有它，DATAV 即使从 localStorage 恢复，离线仍会卡在「作品不存在」。
+      const saved = await idbGet('manifest:latest');
+      if (saved) {
+        try {
+          manifestCache = JSON.parse(saved);
+          warnData('manifest:offline', e);
+          return manifestCache;
+        } catch {}
+      }
+      warnData('manifest', e);
+      throw e;
     }
-    manifestCache = m;
-  }
-  return manifestCache;
+  })().finally(() => { manifestPromise = null; });
+  return manifestPromise;
 }
 
 // 集合二分：collections 按 start 升序，返回最后一个 start <= id 的下标（无则 -1）。
@@ -176,13 +271,22 @@ export function colIdOf(id) {
 // 不按 200 行对齐——按源文件边界切，块内 2~200 行不等，floor((id-start)/200) 会取错块
 //（全库 21.6 万 id 错位、最大偏 53 块）。idx/chunkmap.json 记每集合各块首行 id，二分定位；
 // 表缺失或长度与 manifest 不符时退回旧公式（老集合仍是均匀 200，行为不变）。
-let _chunkMap = null, _chunkMapPromise = null;
+let _chunkMap = null, _chunkMapPromise = null, _chunkMapFailedAt = 0;
 export function getChunkMap() {
+  // 第十一轮 C-2：失败不再把空表固化一整会话；间隔到点就允许重试。
+  if (_chunkMapFailedAt && Date.now() - _chunkMapFailedAt > FAIL_RETRY_MS) {
+    _chunkMap = null; _chunkMapPromise = null; _chunkMapFailedAt = 0;
+  }
   if (_chunkMap) return Promise.resolve(_chunkMap);
   if (!_chunkMapPromise) {
     _chunkMapPromise = cachedJSON('data/idx/chunkmap.json')
-      .then(j => { _chunkMap = j || {}; return _chunkMap; })
-      .catch(() => { _chunkMap = {}; return _chunkMap; });
+      .then(j => { _chunkMap = j || {}; _chunkMapFailedAt = 0; return _chunkMap; })
+      .catch(e => {
+        warnData('chunkmap', e);
+        _chunkMapPromise = null;
+        _chunkMapFailedAt = Date.now();
+        return {};
+      });
   }
   return _chunkMapPromise;
 }
@@ -207,12 +311,13 @@ export async function locate(id) {
     const k = chunkIndexOf(id, firstIds);
     return { col, chunk: k, idxInChunk: id - firstIds[k] };
   }
+  // 第十一轮 C-2：公式回退对新增的 12 个集合会错位（约 21.6 万 id），必须留痕。
+  warnData('chunkmap:fallback', '缺 ' + col.id + ' 分块表，退回 floor(id/200) 公式');
   const off = id - col.start;
   return { col, chunk: Math.floor(off / 200), idxInChunk: off % 200 };
 }
 
-// 分块内存 LRU（同会话二次点击零开销）
-const chunkMem = new Map(); // url -> arr
+// 分块内存 LRU（同会话二次点击零开销，声明在文件顶部）
 function memGet(url) {
   const v = chunkMem.get(url);
   if (v) { chunkMem.delete(url); chunkMem.set(url, v); }
@@ -230,13 +335,23 @@ export function chunkUrl(loc) {
 // 去重重定向：被删重复项 i → 保留正文 i（平行构建生成的 data/dedup-remap.json）。
 // 作用：删除重复正文后，idx/ 派生索引与用户数据（收藏/眉批…）里指向旧 i 的引用，
 // 经此重定向自动落到保留正文，无需重建索引。
-let _remap = null, _remapLoading = null;
+let _remap = null, _remapLoading = null, _remapFailedAt = 0;
 export async function getDedupRemap() {
+  // 第十一轮 C-2：失败后 30 秒允许重试，网络恢复即可自愈。
+  if (_remapFailedAt && Date.now() - _remapFailedAt > FAIL_RETRY_MS) {
+    _remap = null; _remapLoading = null; _remapFailedAt = 0;
+  }
   if (_remap) return _remap;
   if (_remapLoading) return _remapLoading;
   _remapLoading = cachedJSON('data/dedup-remap.json')
-    .then(j => { _remap = (j && j.map) ? j.map : {}; return _remap; })
-    .catch(() => { _remap = {}; return _remap; });
+    .then(j => { _remap = (j && j.map) ? j.map : {}; _remapFailedAt = 0; return _remap; })
+    .catch(e => {
+      warnData('dedup-remap', e);
+      _remapLoading = null;
+      _remapFailedAt = Date.now();
+      _remap = {};   // 同一对象：调用方（含测试夹具）可原地注入，30 秒后自动重试
+      return _remap;
+    });
   return _remapLoading;
 }
 
@@ -257,7 +372,7 @@ export async function getPoem(id) {
     memPut(url, arr);
     const rec = pick(arr);
     if (rec) return rec;
-  } catch {}
+  } catch (e) { warnData('getPoem:chunk', e); }
   // 自愈：缓存数据可能过期，绕过 IDB/内存直取网络重试。
   // 第十轮 🟠-3（2026-11-04）：明文 .json 已随 gzip 化移出生产（只剩 .json.gz），
   // 原先裸 fetch 明文在 Pages 上拿到的是 SPA 回退的 index.html+200，
@@ -266,13 +381,13 @@ export async function getPoem(id) {
   try {
     const q = DATAV ? (url.indexOf('?') < 0 ? '?v=' + DATAV : '&v=' + DATAV) : '';
     const gzUrl = url.replace(/(\?|$)/, '.gz$1') + q;
-    const resp = await fetch(gzUrl, { cache: 'reload' });
+    const resp = await fetchWithTimeout(gzUrl, { cache: 'reload' });
     const ct = ctOf(resp);
     if (!resp.ok || /^text\/html/i.test(ct)) return null;
     const arr = JSON.parse(await gzToText(await resp.arrayBuffer()));
     memPut(url, arr);
     return pick(arr);
-  } catch { return null; }
+  } catch (e2) { warnData('getPoem:retry', e2); return null; }
 }
 
 // 去重后用户数据落地迁移：把指向被删重复项 i 的收藏/眉批/摘抄/背诵/历史，
@@ -382,7 +497,7 @@ function ensureNamesIdx() {
   if (!namesIdxPromise) {
     namesIdxPromise = cachedJSON('data/idx/names/index.json')
       .then(v => (v && Array.isArray(v.parts) && v.parts.length ? v : null))
-      .catch(() => null);
+      .catch(e => { warnData('names-index', e); namesIdxPromise = null; return null; });
   }
   return namesIdxPromise;
 }
@@ -413,7 +528,9 @@ export async function getTags() { return cachedJSON('data/idx/tags.json'); }
 export async function getTagBuckets() { return cachedJSON('data/idx/tagbuckets.json'); }
 // 体裁索引：{ m:{ '五绝':{n, top:[id]} } }
 export async function getGenre() {
-  if (!gnMemo) gnMemo = cachedText('data/idx/genre.json', true).then(t => JSON.parse(t).m || {}).catch(() => ({}));
+  // 第十一轮 C-2：失败清 memo，下次调用可重试，不再整会话降级成空表。
+  if (!gnMemo) gnMemo = cachedText('data/idx/genre.json', true).then(t => JSON.parse(t).m || {})
+    .catch(e => { warnData('genre', e); gnMemo = null; return {}; });
   return gnMemo;
 }
 let gnMemo = null;
@@ -421,7 +538,8 @@ let gnMemo = null;
 export async function getCitpl() {
   // 这两张表由独立脚本生成（不参与 build 的版本号），所以绕过 IDB，只留模块内缓存：
   // 一次会话请求一次，HTTP 仍是 no-cache 协商，改完脚本刷新即可生效。
-  if (!ctMemo) ctMemo = cachedText('data/idx/citpl.json', true).then(t => JSON.parse(t).m || {}).catch(() => ({}));
+  if (!ctMemo) ctMemo = cachedText('data/idx/citpl.json', true).then(t => JSON.parse(t).m || {})
+    .catch(e => { warnData('citpl', e); ctMemo = null; return {}; });
   return ctMemo;
 }
 let ctMemo = null;
@@ -429,7 +547,7 @@ let ctMemo = null;
 export async function getPingze() {
   if (!pzMemo) pzMemo = cachedText('data/idx/pingze.json', true)
     .then(t => { const d = JSON.parse(t); return { m: d.m || {}, d: d.d || [] }; })
-    .catch(() => ({ m: {}, d: [] }));
+    .catch(e => { warnData('pingze', e); pzMemo = null; return { m: {}, d: [] }; });
   return pzMemo;
 }
 let pzMemo = null;
@@ -699,9 +817,12 @@ export function importAllData(jsonStr) {
     lsSet(HIST_KEY, cur0);
     summary.searchHist = cur0.length;
   }
-  if (o.prefs) for (const k of PREF_KEYS) {
-    if (o.prefs[k] !== undefined && o.prefs[k] !== null) {
-      try { localStorage.setItem('shici-' + k, o.prefs[k]); } catch {}
+  // 第十一轮 P3：外部 JSON 的 prefs 值可能是对象/数组，setItem 会隐式转成
+  // "[object Object]" → parseInt 得 NaN → --fs: NaNpx。只接受标量。
+  if (o.prefs && typeof o.prefs === 'object') for (const k of PREF_KEYS) {
+    const val = o.prefs[k];
+    if (typeof val === 'string' || typeof val === 'number' || typeof val === 'boolean') {
+      try { pref(k, String(val)); } catch {}
     }
   }
   if (Array.isArray(o.excerpts)) {
@@ -910,10 +1031,13 @@ export function isRead(id) {
 export function readStats() {
   const o = readStore();
   const cur = new Date();
-  const today = o.days[dayKey(cur)] || 0;
-  if (!o.days[dayKey(cur)]) cur.setDate(cur.getDate() - 1);
+  // 第十一轮 C-6：markRead 给「当天只重读」写 0；真值判断会把 0 天当断签，
+  // 出现 best > streak 且连续打卡莫名归零。改用自有属性判断，与 days/best 同口径。
+  const has = (d) => Object.prototype.hasOwnProperty.call(o.days, d);
+  const today = has(dayKey(cur)) ? (o.days[dayKey(cur)] || 0) : 0;
+  if (!has(dayKey(cur))) cur.setDate(cur.getDate() - 1);
   let streak = 0;
-  while (o.days[dayKey(cur)]) { streak++; cur.setDate(cur.getDate() - 1); }
+  while (has(dayKey(cur))) { streak++; cur.setDate(cur.getDate() - 1); }
   // 最长连续：键是 YYYY-MM-DD，字典序即日期序，逐键看是否紧挨上一天。
   // 坏键（解析出 NaN）只会断链，不会抛错。
   const keys = Object.keys(o.days).sort();

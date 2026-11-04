@@ -15,6 +15,14 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SNAP = path.join(HERE, 'snapshots/pure.json');
 const UPDATE = process.argv.includes('--update');
 
+// 与快照无关的硬断言：防止「快照被 --update 重写」把假绿一起写进去（E-7）。
+let hardFail = 0;
+const check = (name, cond, got) => {
+  if (cond) return;
+  hardFail++;
+  console.error(`✗ ${name} —— ${got}`);
+};
+
 const { layoutParagraph } = await import('../site/js/vcommon.js');
 const { locateTerms, normZh, buildNotes, loadCharMap } = await import('../site/js/fn.js');
 const { cleanSelectionText } = await import('../site/js/views/detail.js');
@@ -61,14 +69,42 @@ const normInputs = ['學而時習之', '学而时习之', 'ABC abc', '《論語�
 cases.push(['normZh 归一', normInputs.map(s => [s, normZh(s)])]);
 
 // ---------- cleanSelectionText：划选文本清洗 ----------
-function fakeRange(html) {
+// detail.js 会 frag.querySelectorAll('.strain-line, rt, rp, .pzw, .fnn') 并逐个 remove()。
+// 旧 fakeRange 用 () => [] 让这条分支永远空转（E-7 假阳性）。这里造「可累积」的假节点
+// 列表：普通文本节点 + 上述五类噪声节点；remove() 真把节点标成已移除，textContent 随之
+// 变化，清洗分支真的执行、结果可观测。stat.removed 记录移除数，用硬断言证明分支跑过。
+function fakeRange(parts, stat = { removed: 0 }) {
+  const list = typeof parts === 'string' ? [{ text: parts }] : parts;
+  const nodes = list.map(({ cls = '', text }) => ({ cls, text, removed: false }));
   const clone = {
-    textContent: html,
-    querySelectorAll: () => [],
+    get textContent() { return nodes.filter(n => !n.removed).map(n => n.text).join(''); },
+    querySelectorAll(sel) {
+      const classes = String(sel).split(',').map(s => s.trim().replace(/^\./, ''));
+      return nodes.filter(n => n.cls && classes.includes(n.cls)).map(n => ({
+        remove() { if (!n.removed) { n.removed = true; stat.removed++; } },
+      }));
+    },
   };
-  return { cloneContents: () => clone };
+  return { cloneContents: () => clone, stat };
 }
 cases.push(['cleanSelection 去多余空白', cleanSelectionText(fakeRange('移舟泊煙渚，\n   日暮客愁新。  '))]);
+// 五类噪声节点齐全：清洗分支应命中并移除 5 个，结果里不能残留任何噪声文案。
+{
+  const stat = { removed: 0 };
+  const r = fakeRange([
+    { text: '移舟泊煙渚，\n   日暮客愁新。  ' },  // 普通正文文本节点
+    { cls: 'pzw', text: '平平仄平仄' },           // 平仄逐字下标
+    { cls: 'rt', text: 'zhǔ' },                   // ruby 注音
+    { cls: 'rp', text: '()' },                    // ruby 括号
+    { cls: 'fnn', text: '[1]' },                  // 脚注上标
+    { cls: 'strain-line', text: '仄仄仄平平' },   // 整行式平仄段
+  ], stat);
+  const cleaned = cleanSelectionText(r);
+  check('清洗分支真的移除了 5 个噪声节点', stat.removed === 5, '实际移除 ' + stat.removed);
+  check('清洗结果不含噪声文案', !/平|zhǔ|\(\)|\[1\]/.test(cleaned), JSON.stringify(cleaned));
+  cases.push(['cleanSelection 剔除平仄/注音/脚注噪声', { text: cleaned, removed: stat.removed }]);
+  cases.push(['cleanSelection 噪声文案不残留', /平|zhǔ|\(\)|\[1\]/.test(cleaned), false]);
+}
 cases.push(['cleanSelection 异常范围不抛错', cleanSelectionText({ cloneContents() { throw new Error('boom'); } })]);
 
 // ---------- 比对 / 更新 ----------
@@ -76,6 +112,7 @@ const got = {};
 for (const [name, value] of cases) got[name] = value;
 
 if (UPDATE) {
+  if (hardFail) { console.error('清洗硬断言未过，拒绝写入快照'); process.exit(1); }
   fs.mkdirSync(path.dirname(SNAP), { recursive: true });
   fs.writeFileSync(SNAP, JSON.stringify(got, null, 2) + '\n', 'utf8');
   console.log(`已写入快照：${path.relative(process.cwd(), SNAP)}（${cases.length} 项）`);
@@ -101,5 +138,6 @@ for (const [name] of cases) {
 const missing = Object.keys(want).filter(k => !(k in got));
 if (missing.length) { fail++; console.log('  ✗ 快照里有用例已被删除：' + missing.join('、')); }
 
-console.log(fail ? `\n失败 ${fail} 项 / 共 ${cases.length} 项` : `\n全部通过（${cases.length} 项）`);
-process.exit(fail ? 1 : 0);
+const bad = fail + hardFail;
+console.log(bad ? `\n失败 ${bad} 项 / 共 ${cases.length} 项` : `\n全部通过（${cases.length} 项）`);
+process.exit(bad ? 1 : 0);

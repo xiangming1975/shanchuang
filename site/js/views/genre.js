@@ -1,7 +1,8 @@
 // 页面：体裁（#/g/<体裁>）
 // 近体/古体/古文/赋的介绍是写死的；词牌介绍取 idx/cipai.json（含格律串）。
 // 名篇取 idx/genre.json 里构建期挑好的 id（热标记或来自精选集），再用 id 批量取行。
-import { app, topbar, LE_PREFIX, cutTitle, displayTitle, titleMax, snippetOf, emptyHtml } from '../vcommon.js';
+import { app, topbar, LE_PREFIX, cutTitle, displayTitle, titleMax, snippetOf, emptyHtml, safeDecode } from '../vcommon.js';
+import { setAppHTML, isCurrent, currentRenderSeq } from '../render-guard.js';
 import { loadRowsByIds } from './list.js';
 import { getGenre, getCitpl, colIdOf, setNavCtx } from '../store.js';
 import { esc } from '../py.js';
@@ -101,16 +102,16 @@ function sectionHtml(title, items) {
   return `<div class="card"><h2>${title}</h2><div class="annotate">${items.map(x => `<p style="margin:0 0 8px">${esc(x)}</p>`).join('')}</div></div>`;
 }
 
-async function genreView(seg) {
-  let key = '';
-  try { key = decodeURIComponent(seg[0] || ''); } catch { key = seg[0] || ''; }
-  app.innerHTML = topbar(zhShow(key) || '体裁', { back: true }) + '<div class="loading"></div>';
+async function genreView(seg, seq = currentRenderSeq()) {
+  const key = safeDecode(seg[0] || '');
+  setAppHTML(seq, topbar(zhShow(key) || '体裁', { back: true }) + '<div class="loading"></div>');
 
   const map = await getGenre().catch(() => ({}));
+  if (!isCurrent(seq)) return;
   const info = map[key];
   if (!info && !TEXT[key] && !key.startsWith(CI_PREFIX)) {
-    app.innerHTML = topbar(zhShow(key) || '体裁', { back: true }) +
-      emptyHtml('空', '没有这个体裁<br><a style="color:var(--accent)" href="#/tags">看看全部标签</a>');
+    setAppHTML(seq, topbar(zhShow(key) || '体裁', { back: true }) +
+      emptyHtml('空', '没有这个体裁<br><a style="color:var(--accent)" href="#/tags">看看全部标签</a>'));
     return;
   }
 
@@ -166,6 +167,8 @@ async function genreView(seg) {
     }
   }
 
+  if (!isCurrent(seq)) return;
+
   const fmt = t && t.sample ? `<div class="card"><h2>平仄格式</h2>
     <div class="genre-pattern">${t.sample.map(x => `<div>${esc(x)}</div>`).join('')}</div></div>` : '';
 
@@ -174,7 +177,7 @@ async function genreView(seg) {
     <div class="annotate" style="font-size:0.88rem">${t.how.map(x => `<p style="margin:0 0 8px">${esc(x)}</p>`).join('')}</div>
     ${isCi ? '<div class="section-tip" style="margin-top:6px">以上是词的通则，具体到这个词牌以词谱为准。</div>' : ''}</div>` : '';
 
-  app.innerHTML = topbar(zhShow(isCi ? name : key), { back: true, extra: info ? `<span class="act">${info.n.toLocaleString()} 篇</span>` : '' }) + `
+  setAppHTML(seq, topbar(zhShow(isCi ? name : key), { back: true, extra: info ? `<span class="act">${info.n.toLocaleString()} 篇</span>` : '' }) + `
     <div class="card">
       <h2>${esc(zhShow(isCi ? name : key))}</h2>
       <div class="annotate">${esc(zhShow(sumText))}</div>
@@ -185,7 +188,7 @@ async function genreView(seg) {
     ${fmt}
     <div class="group-title">名篇</div>
     <div class="list" id="g-list"><div class="loading"></div></div>
-    <div class="section-tip" style="text-align:center;margin-top:10px">名篇按热度与精选集挑选，不按年代排序</div>`;
+    <div class="section-tip" style="text-align:center;margin-top:10px">名篇按热度与精选集挑选，不按年代排序</div>`);
 
   const listEl = document.getElementById('g-list');
   const ids = (info && info.top) || [];
@@ -193,6 +196,7 @@ async function genreView(seg) {
   if (!ids.length) { listEl.innerHTML = emptyHtml('篇', '这一类暂无可推荐的名篇'); return; }
   try {
     const rows = await loadRowsByIds(ids);
+    if (!isCurrent(seq)) return;
     // 名篇要带首句：同一词牌下十几首《浣溪沙》，只有题目分不出来
     const item = (r) => {
       const plain = String(r.t || '').replace(LE_PREFIX, '');

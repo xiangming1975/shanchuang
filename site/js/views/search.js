@@ -1,18 +1,20 @@
 // 页面：search
-import { app, topbar, hl, popupConfirm, cutTitle, displayTitle, titleMax, LE_PREFIX, snippetOf } from '../vcommon.js';
+import { app, topbar, hl, popupConfirm, cutTitle, displayTitle, titleMax, LE_PREFIX, snippetOf, safeDecode } from '../vcommon.js';
+import { setAppHTML, isCurrent, currentRenderSeq } from '../render-guard.js';
 import { getSearchHist, pushSearchHist, clearSearchHist, getManifest, getNames, getNamesPart, getNamesIndex, getFulltext, getFtIndex, getFtShard, getMingju, getAuthor, getTagBuckets, cachedText, colIdOf, colIndexOf, setNavCtx, pref } from '../store.js';
 import { esc } from '../py.js';
 import { loadRowsByIds } from './list.js';
 import { loadCharMap, queryVariants, normZh, dedupeKey, zhShow } from '../fn.js';
 import { bestMatch, TITLE_W, AUTHOR_W, withBonus } from '../rank.js';
 
-async function authorView(seg) {
-  const name = decodeURIComponent(seg[0] || '');
-  app.innerHTML = topbar(name, { back: true }) + '<div class="loading"></div>';
+async function authorView(seg, seq = currentRenderSeq()) {
+  const name = safeDecode(seg[0] || '');
+  setAppHTML(seq, topbar(name, { back: true }) + '<div class="loading"></div>');
   const au = await getAuthor(name).catch(() => null);
-  if (!au) { app.innerHTML = topbar(name, { back: true }) + `<div class="empty-state"><div class="big">人</div>暂未收录该作者的详细资料<br><a style="color:var(--accent)" href="#/s/${encodeURIComponent(name)}">在全部作品中搜索「${esc(name)}」</a></div>`; return; }
+  if (!isCurrent(seq)) return;
+  if (!au) { setAppHTML(seq, topbar(name, { back: true }) + `<div class="empty-state"><div class="big">人</div>暂未收录该作者的详细资料<br><a style="color:var(--accent)" href="#/s/${encodeURIComponent(name)}">在全部作品中搜索「${esc(name)}」</a></div>`); return; }
   const bio = au.bio ? zhShow(au.bio) : '暂无作者简介。';
-  app.innerHTML = `
+  setAppHTML(seq, `
     ${topbar(au.d ? `${zhShow(au.d)} · ${zhShow(name)}` : zhShow(name), { back: true })}
     <div class="card">
       <div class="author-head">
@@ -24,7 +26,7 @@ async function authorView(seg) {
     </div>
     <div class="group-title">作品选（前 ${au.p.length} 篇）</div>
     <div class="list">${au.p.map(p => `<a class="row" href="#/p/${p.i}" title="${esc(displayTitle(p))}"><span class="rt">${esc(cutTitle(displayTitle(p), titleMax(colIdOf(p.i))))}</span></a>`).join('')}</div>
-    ${au.n > au.p.length ? `<a class="section-tip" style="display:block;text-align:center;color:var(--accent)" href="#/s/${encodeURIComponent(name)}">共有 ${au.n} 篇，查看全部请搜索作者名</a>` : ''}`;
+    ${au.n > au.p.length ? `<a class="section-tip" style="display:block;text-align:center;color:var(--accent)" href="#/s/${encodeURIComponent(name)}">共有 ${au.n} 篇，查看全部请搜索作者名</a>` : ''}`);
   setNavCtx(au.p.map(p => p.i), '作者 · ' + name).catch(() => {});   // 阅读队列：作者作品选（2026-11-01）
   const bioEl = document.getElementById('bio');
   const fold = document.getElementById('bio-fold');
@@ -215,11 +217,12 @@ function preloadSearch() {
   }), 5000);
 }
 
-async function searchView(seg) {
+async function searchView(seg, routeSeq = currentRenderSeq()) {
   let searchSeq = 0;
   if (!manifestCacheCols) { try { const m = await getManifest(); manifestCacheCols = m.collections; manifestCacheTotal = m.total || 0; } catch { manifestCacheCols = []; } }
-  const q0 = seg.length ? decodeURIComponent(seg.join('/')) : '';
-  app.innerHTML = `
+  if (!isCurrent(routeSeq)) return;
+  const q0 = seg.length ? safeDecode(seg.join('/')) : '';
+  setAppHTML(routeSeq, `
     <div class="page-pad"></div>
     <div class="searchbar">
       <select id="scope-sel" aria-label="搜索范围">
@@ -233,7 +236,7 @@ async function searchView(seg) {
       <button class="clear" id="q-clear">清空</button>
     </div>
     <div id="search-hist"></div>
-    <div id="search-result"><div class="section-tip">支持搜索全部 ${Math.round(manifestCacheTotal / 10000)} 万篇作品的标题与作者，以及正文。</div></div>`;
+    <div id="search-result"><div class="section-tip">支持搜索全部 ${Math.round(manifestCacheTotal / 10000)} 万篇作品的标题与作者，以及正文。</div></div>`);
   const input = document.getElementById('q');
   const box = document.getElementById('search-result');
   document.getElementById('q-clear').onclick = () => { input.value = ''; input.focus(); doSearch(''); };
@@ -306,6 +309,7 @@ async function searchView(seg) {
     const AUTHORS = ['李白', '杜甫', '苏轼', '王维', '李清照', '辛弃疾'];
     let tags = [];
     try { const b = await getTagBuckets(); tags = (b.rows.theme || []).slice(0, 10).map(x => x[0]); } catch {}
+    if (!isCurrent(routeSeq)) return;
     el.innerHTML = '<div class="group-title">热门诗人</div><div class="tagrow">' +
       AUTHORS.map(a => `<a href="#/a/${encodeURIComponent(a)}">${esc(zhShow(a))}</a>`).join('') + '</div>' +
       (tags.length ? '<div class="group-title">热门题材</div><div class="tagrow">' +
@@ -313,14 +317,14 @@ async function searchView(seg) {
   }
 
   // 作者范围：检索 authors.json 主表列出候选作者（不扫 names、不跑正文/名句）
-  const renderAuthorResults = async (q, seq) => {
+  const renderAuthorResults = async (q, localSeq) => {
     box.innerHTML = '<div class="group-title">作者检索中…</div>';
     const idxP = ensureAuthorsIdx();
     const [qS, qT] = queryVariants(q);
     const vars = [...new Set([q.toLowerCase(), qS, qT])].filter(Boolean);
     const idx = await idxP;
     await loadCharMap().catch(() => {});
-    if (seq !== searchSeq) return;   // 等表期间用户又输入了 → 本次作废
+    if (localSeq !== searchSeq || !isCurrent(routeSeq)) return;   // 等表期间用户又输入了 → 本次作废
     if (!idx) { box.innerHTML = '<div class="empty-state"><div class="big">无</div>作者索引加载失败，请稍后重试</div>'; return; }
     // 精确 > 前缀 > 包含；同组内短名在前（「王维」排在「王维之友」前）
     const exact = [], prefix = [], contains = [];
@@ -350,10 +354,10 @@ async function searchView(seg) {
   };
 
   // 按 id 取记录补首句：只补前 20 条，未就绪时静默跳过
-  async function fillFirstLines(ids, seq) {
+  async function fillFirstLines(ids, localSeq) {
     try {
       const rows = await loadRowsByIds(ids.slice(0, 40));
-      if (seq !== searchSeq) return;
+      if (localSeq !== searchSeq || !isCurrent(routeSeq)) return;
       for (const r of rows) {
         const el = document.querySelector('#title-list .row[data-i="' + r.i + '"]');
         if (!el) continue;
@@ -406,17 +410,17 @@ async function searchView(seg) {
       return;
     }
     histBox.innerHTML = '';
-    const seq = ++searchSeq;
+    const localSeq = ++searchSeq;
     // ① 回车/点历史词：立刻记
     if (commit) pushSearchHist(q);
     // ② 手机上很多人在即时搜索里从不按回车，所以再加一道「停手 1.2 秒」的记录。
     //    前缀会被 pushSearchHist 顺手清掉，最终留下的仍是完整查询词。
     clearTimeout(histTimer);
     histTimer = setTimeout(() => {
-      if (seq === searchSeq && input.value.trim() === q) pushSearchHist(q);
+      if (localSeq === searchSeq && isCurrent(routeSeq) && input.value.trim() === q) pushSearchHist(q);
     }, 1200);
     // 作者范围：单独通道，直接检索作者表
-    if (scope === 'author') { renderAuthorResults(q, seq); return; }
+    if (scope === 'author') { renderAuthorResults(q, localSeq); return; }
     const authorCache = new Map();
     let authorHit = '';
     let lastDeduped = [], lastCipaiHtml = '';
@@ -425,7 +429,7 @@ async function searchView(seg) {
     // 其余范围照旧：快道先行、names 首片出结果、其余分片后台补扫。
     if (scope === 'content') await loadCharMap();
     else await ensureNames();
-    if (seq !== searchSeq) return;   // 等索引期间用户又输入了 → 本次作废
+    if (localSeq !== searchSeq || !isCurrent(routeSeq)) return;   // 等索引期间用户又输入了 → 本次作废
     const [qS, qT] = queryVariants(q);
     const vars = [...new Set([q.toLowerCase(), qS, qT])].filter(Boolean);
     const qNorm = normZh(q);
@@ -474,7 +478,7 @@ async function searchView(seg) {
       }
     };
 
-    // 渐进渲染：每扫完一片就重排去重重画一次（seq 防串台）。
+    // 渐进渲染：每扫完一片就重排去重重画一次（localSeq 防串台）。
     // 名句/正文的落地结果也在这里一并重画，避免补扫重渲染把它们冲掉。
     const renderResults = async () => {
       scored.sort((x, y) => y[0] - x[0] || x[1] - y[1]);
@@ -498,6 +502,7 @@ async function searchView(seg) {
       if (authorHit) {
         let au = authorCache.get(authorHit);
         if (au === undefined) { au = await getAuthor(authorHit).catch(() => null); authorCache.set(authorHit, au); }
+        if (localSeq !== searchSeq || !isCurrent(routeSeq)) return;
         if (au) {
           authorHtml = `<a class="card author-hit" href="#/a/${encodeURIComponent(authorHit)}"><div class="ah-av">${esc(zhShow(authorHit.slice(0, 1)))}</div><div class="ah-body"><div class="ah-n">${esc(zhShow(authorHit))}</div><div class="ah-d">${au.d ? esc(zhShow(au.d)) + ' · ' : ''}收录 ${au.n} 篇作品</div><div class="ah-go">作者页</div></div></a>`;
         }
@@ -510,7 +515,7 @@ async function searchView(seg) {
         const qvs = vars.map(strip);
         const cp = cipaiData.find(c => qvs.includes(strip(c.n)));
         if (cp) {
-          cipaiHtml = `<div class="card cipai-card" data-fold><h2 class="fold-head">词牌 · ${esc(zhShow(cp.n))}<span class="fold-btn">+</span></h2><div class="fold-body">`
+          cipaiHtml = `<div class="card cipai-card" data-fold><button type="button" class="fold-head" aria-expanded="false">词牌 · ${esc(zhShow(cp.n))}<span class="fold-btn">+</span></button><div class="fold-body">`
             + (cp.d ? `<div class="section-tip" style="margin:0 0 6px">${esc(zhShow(cp.d))}</div>` : '')
             + `<div class="annotate">${esc(zhShow(cp.i || '暂无介绍。'))}</div>`
             + (cp.g ? `<div class="section-tip">格律：${esc(zhShow(cp.g))}</div>` : '')
@@ -557,13 +562,13 @@ async function searchView(seg) {
         titleMore.remove();
         // 展开的这批同样缺首句，按需补一次
         const more = titleHits.slice(HEAD_N).filter(([, id, t, , first]) => !first && titleCount[showTitle(t)] > 1).map(([, id]) => id);
-        if (more.length) fillFirstLines(more, seq);
+        if (more.length) fillFirstLines(more, localSeq);
       };
       // 同名多首（如「水龙吟」326 条）光看题名分不清，给前 20 条补首句。
       // firstlines.json 只覆盖 23%，这里对缺的那些按需取记录（一次请求）。
       try {
         const need = titleHits.slice(0, HEAD_N).filter(([, id, t, , first]) => !first && titleCount[showTitle(t)] > 1).map(([, id]) => id);
-        if (need.length) fillFirstLines(need, seq);
+        if (need.length) fillFirstLines(need, localSeq);
       } catch {}
     };
 
@@ -574,7 +579,7 @@ async function searchView(seg) {
     let ftDone = scope === 'title', mjDone = scope === 'title', lastFtRender = 0;
     const ftIds = [], mjIds = [];
     const tryQueue = () => {
-      if (seq !== searchSeq || !ftDone || !mjDone) return;
+      if (localSeq !== searchSeq || !isCurrent(routeSeq) || !ftDone || !mjDone) return;
       const ids = [...lastDeduped.map(r => r[1]), ...mjIds, ...ftIds];
       if (!ids.length) return;   // 零结果（手滑的验证词之类）不清队——保留正在进行的阅读会话
       setNavCtx(ids, '搜索结果 · ' + q).catch(() => {});
@@ -594,7 +599,7 @@ async function searchView(seg) {
           const part = await loadNamesPart(pi);
           if (!part) { namesMergedUpTo = pi + 1; continue; }   // 缺片跳过，别卡住后面的
           if (pi >= namesMergedUpTo) { namesText += part; namesMergedUpTo = pi + 1; }
-          if (seq !== searchSeq) continue;
+          if (localSeq !== searchSeq || !isCurrent(routeSeq)) continue;
           scanText(part);
           await renderResults().catch(() => {});
           tryQueue();   // 补扫有新命中且 ft/mj 已落地 → 用增长后的列表重挂队列
@@ -607,14 +612,14 @@ async function searchView(seg) {
       // 名句表只有 276KB、明明先到也要等正文扫完才画——白等。现在谁先到谁先渲染。
       // 空态判定等两边都完成（都异步，单独判会误报“没有找到”）。
       const checkEmpty = () => {
-        if (seq !== searchSeq || !ftDone || !mjDone) return;
+        if (localSeq !== searchSeq || !isCurrent(routeSeq) || !ftDone || !mjDone) return;
         if (!scored.length && ftHtmlDone === '' && mjHtmlDone === '' && !lastCipaiHtml) {
           box.innerHTML = '<div class="empty-state"><div class="big">无</div>没有找到相关内容</div>';
         }
       };
       // 名句检索（JoyDraw 名句表，命中直达全诗）
       const mjP = ensureMj().then(() => {
-        if (seq !== searchSeq) return [];
+        if (localSeq !== searchSeq || !isCurrent(routeSeq)) return [];
         const hits = [];
         for (const row of mingjuRows) {
           let pos = -1, qUsed = q;
@@ -639,7 +644,7 @@ async function searchView(seg) {
         return hits;
       }).catch(() => []);
       mjP.then((mjHits) => {
-        if (seq !== searchSeq) return;
+        if (localSeq !== searchSeq || !isCurrent(routeSeq)) return;
         mjDone = true;
         mjHtmlDone = mjHits.length ? `<div class="group-title">名句（${mjHits.length >= 20 ? '20+' : mjHits.length} 条）</div><div class="list">${mjHits.join('')}</div>` : '';
         renderResults().catch(() => {});
@@ -649,7 +654,7 @@ async function searchView(seg) {
       // 正文：逐片渐进落地。中间进度 150ms 节流（57 片全画会闪，最终帧不节流）；
       // 0 命中且未完时保持 ftHtmlDone=null，让「正文检索中…」占位继续顶着。
       const onFt = (hits, done) => {
-        if (seq !== searchSeq) return;
+        if (localSeq !== searchSeq || !isCurrent(routeSeq)) return;
         if (done || hits.length) {
           const now = Date.now();
           if (!done && now - lastFtRender < 150) return;
@@ -663,7 +668,7 @@ async function searchView(seg) {
       };
       ftSearch(vars, q, 24, onFt, ftIds).catch(() => {
         // 正文检索整体失败（清单缺失/旧兜底也没有）：占位收掉，别让「检索中…」永远挂着
-        if (seq !== searchSeq) return;
+        if (localSeq !== searchSeq || !isCurrent(routeSeq)) return;
         if (ftHtmlDone === null) ftHtmlDone = '';
         ftDone = true;
         checkEmpty();

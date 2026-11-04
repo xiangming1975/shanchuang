@@ -3,6 +3,7 @@
 // ① 把作品信息写进剪贴板、送到问卷（读者在第 1 题粘贴即可）；
 // ② 留一条旁路：复制一段文字直接发我，给不想填表的人。
 import { app, COLLECT_URL } from '../vcommon.js';
+import { setAppHTML, isCurrent, currentRenderSeq } from '../render-guard.js';
 import { getPoem } from '../store.js';
 import { esc } from '../py.js';
 
@@ -13,10 +14,11 @@ function locateOf(poem) {
   return `${who ? who + ' ' : ''}《${poem.t}》（#/p/${poem.i}）`;
 }
 
-async function reportView(seg) {
+async function reportView(seg, seq = currentRenderSeq()) {
   const id = parseInt(seg[0]);
   let poem = null;
   if (!isNaN(id)) { try { poem = await getPoem(id); } catch {} }
+  if (!isCurrent(seq)) return;
 
   const locate = locateOf(poem);
   const tmpl = `${locate ? '【勘误】' + locate : '【勘误】'}
@@ -25,7 +27,7 @@ async function reportView(seg) {
 应有的样子：
 依据：`;
 
-  app.innerHTML = `<div class="page-pad"></div>
+  setAppHTML(seq, `<div class="page-pad"></div>
     <div class="card">
       <h2>一字师 · 勘误帖</h2>
       <div class="section-tip" style="margin:6px 0 12px">
@@ -53,7 +55,7 @@ async function reportView(seg) {
           保留编号、位置、原文、应有的样子四行就够。
         </div>
       </div>
-    </details>`;
+    </details>`);
 
   // 主路径：复制定位串 → 打开问卷
   const go = document.getElementById('go-survey');

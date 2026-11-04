@@ -7,6 +7,14 @@ import { esc } from './html.js';
 import { zipStrain } from './py.js';
 import { zhShow } from './fn.js';
 
+// ---------- 共用小工具（第十一轮下沉，供各视图 import 复用） ----------
+// URL 边界兜底：非法 % 序列会让 decodeURIComponent 抛 URIError，统一退回原串。
+export function safeDecode(s) {
+  try { return decodeURIComponent(s); } catch { return s; }
+}
+export const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+export const PAD = '<div class="page-pad"></div>';
+
 // PROSE/CI 两张表是「新增集合必须手工登记」的版面规则（HANDOFF §6.5）——
 // 2026-11-01 补登记 pdb_* 补遗：pdb_guwen 古文（此前被当诗渲染、徽章判成古体）、
 // pdb_songci/pdb_songci300/pdb_yuan 词曲（词牌徽章与韵句断行此前全部失效）
@@ -25,7 +33,7 @@ function splitSentences(s) {
 // 词的行长：按「一行能放几个汉字」算，不按固定字数。
 // 原来是「正文超 16 字按逗号补断」——手机窄屏 + 大字号下一行只放得下 13 字，
 // 16 字的长句被浏览器硬折，尾部剩一两个字，就是那些难看的断头行。
-const HAN = /[㐀-鿿]/;
+export const HAN = /[㐀-鿿]/;
 const hanCount = (s) => { let n = 0; for (const ch of String(s)) if (HAN.test(ch)) n++; return n; };
 
 function ciMaxChars() {
@@ -356,6 +364,7 @@ if (!__foldDelegated && app) {
     if (!head) return;
     const card = head.closest('.card');
     const open = card.classList.toggle('fold-open');
+    head.setAttribute('aria-expanded', open ? 'true' : 'false');
     const fb = card.querySelector('.fold-btn');
     if (fb) fb.textContent = open ? '−' : '+';
   });
@@ -363,6 +372,8 @@ if (!__foldDelegated && app) {
 
 // 顶部横条全线取消（2026-10-27 晚）：底部 tab 与正文本身已经说明"你在哪"，
 // 再顶一条标题是重复。统一退化成一点留白，调用处不必逐个改。
+// 参数已废弃：顶部横条已全线取消，调用处传入的 title / opts 一律忽略，
+// 保留原签名仅为兼容旧调用，传任何参数都无效（不要改调用处，避免大范围回归）。
 function topbar(title, opts = {}) {
   return '<div class="page-pad"></div>';
 }
@@ -505,6 +516,32 @@ function announce(msg) {
 // 只有一个全站浮窗 #fn-pop，但只在详情页与「我的」系页面里写过 DOM。
 // 搜索页等没有它的页面一旦调 popupMsg/popupConfirm 就会掉进 alert/confirm——
 // 原生模态框会阻塞页面（实测点「清空历史」后整页僵住）。这里改成缺了就懒创建。
+// 浮窗可访问性（v192）：全站唯一的 #fn-pop 一律声明为模态对话框；
+// Esc 关闭、关闭时把焦点还给打开它的控件。detail.js 的 bindFnPopup 也复用 closePopup。
+let popReturnFocus = null;
+export function rememberPopupFocus() { popReturnFocus = document.activeElement; }
+export function closePopup(pop) {
+  if (!pop) return;
+  pop.classList.add('hidden');
+  pop.innerHTML = '';
+  const t = popReturnFocus;
+  popReturnFocus = null;
+  if (t && t.isConnected && typeof t.focus === 'function') {
+    try { t.focus(); } catch (e) {}
+  }
+}
+let popEscBound = false;
+function bindPopupEsc() {
+  if (popEscBound) return;
+  popEscBound = true;
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' && e.key !== 'Esc') return;
+    const pop = document.getElementById('fn-pop');
+    if (pop && !pop.classList.contains('hidden')) closePopup(pop);
+  });
+}
+bindPopupEsc();
+
 function popHost() {
   let pop = document.getElementById('fn-pop');
   if (!pop) {
@@ -514,6 +551,9 @@ function popHost() {
     // 挂在 #app 内：路由切换时会随页面一起清掉，不会和详情页自己插的那个撞 id
     (document.getElementById('app') || document.body).appendChild(pop);
   }
+  pop.setAttribute('role', 'dialog');
+  pop.setAttribute('aria-modal', 'true');
+  rememberPopupFocus();
   return pop;
 }
 
@@ -522,7 +562,7 @@ function popupMsg(msg, btnText) {
   const pop = popHost();
   pop.innerHTML = '<div class="fn-card"><div class="fn-expl">' + esc(msg) + '</div><button class="fn-close">' + esc(btnText || '好的') + '</button></div>';
   pop.classList.remove('hidden');
-  pop.querySelector('.fn-close').onclick = (ev) => { ev.stopPropagation(); pop.classList.add('hidden'); };
+  pop.querySelector('.fn-close').onclick = (ev) => { ev.stopPropagation(); closePopup(pop); };
 }
 
 // 二次确认：破坏性操作（清空历史等）统一走这里
@@ -534,8 +574,8 @@ function popupConfirm(msg, sub, okLabel, onOk) {
     + '<button class="fn-close" id="pc-yes" style="color:var(--accent)">' + esc(okLabel || '确认') + '</button>'
     + '<button class="fn-close" id="pc-no">取消</button></div></div>';
   pop.classList.remove('hidden');
-  pop.querySelector('#pc-yes').onclick = (ev) => { ev.stopPropagation(); pop.classList.add('hidden'); onOk(); };
-  pop.querySelector('#pc-no').onclick = (ev) => { ev.stopPropagation(); pop.classList.add('hidden'); };
+  pop.querySelector('#pc-yes').onclick = (ev) => { ev.stopPropagation(); closePopup(pop); onOk(); };
+  pop.querySelector('#pc-no').onclick = (ev) => { ev.stopPropagation(); closePopup(pop); };
 }
 
 // 主题四种取值：'light' | 'dark' | 'auto'（按时段）| 空（跟随系统）。

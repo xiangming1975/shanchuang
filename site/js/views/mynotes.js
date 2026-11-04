@@ -2,6 +2,7 @@
 // 与历史页同一套路（分组列表 + 懒加载 + 行内删除 + 底部清空），只是分组维度不同：
 // 历史按时间倒序平铺，眉批按「哪一篇」聚拢，组内按行号顺序——批注属于某一篇的某一处。
 import { app, popupConfirm, rowMeta, emptyHtml } from '../vcommon.js';
+import { setAppHTML, isCurrent, currentRenderSeq } from '../render-guard.js';
 import { getAllNotes, removeNote, clearUserData, noteTotal } from '../store.js';
 import { loadRowsByIds } from './list.js';
 import { pagedList } from './paged.js';
@@ -28,18 +29,18 @@ function groupList() {
 // 组头：题名（截断）+「朝代 · 作者」（rowMeta，2026-10-29 复用收敛）
 const headOf = (pid) => rowMeta(rowCache.get(String(pid)), pid);
 
-async function myNotesView() {
+async function myNotesView(seg, seq = currentRenderSeq()) {
   const groups = groupList();
   const total = groups.reduce((s, g) => s + g.notes.length, 0);
 
-  app.innerHTML = `
+  setAppHTML(seq, `
     <div class="section-tip" id="n-tip"></div>
     <div id="n-list"></div>
     <div class="h-end" id="n-end"></div>
     <div class="h-foot">
       <button class="set-toggle" id="n-more">加载更多</button>
       <button class="set-toggle" id="n-clear">清空眉批</button>
-    </div>`;
+    </div>`);
 
   const listEl = document.getElementById('n-list');
   const tipEl = document.getElementById('n-tip');
@@ -96,6 +97,8 @@ async function myNotesView() {
   });
   moreBtn.onclick = more;
   await more();
+
+  if (!isCurrent(seq)) return;
 
   // 删单条：原地移除，不住回顶部
   listEl.addEventListener('click', (ev) => {

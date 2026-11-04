@@ -5,22 +5,22 @@
 // 记分：同合璧——连对即时判定，选错归零断局；连续十对得一星（starsFor），此后每对一星，
 //   即记即存 bzstars；最高连对 bzbest、收局次数 bzrounds。随备份导出，首页行令卡展示。
 // 节奏：同合璧——答完看出处，点「下一题」，山窗沉吟一秒（BZ_BEAT_MS）再出题。
-import { app, topbar, emptyHtml, splitMingjuPair, quizOptions, starsFor, bzHolePositions } from '../vcommon.js';
+import { app, topbar, emptyHtml, splitMingjuPair, quizOptions, starsFor, bzHolePositions, sleep, HAN } from '../vcommon.js';
+import { setAppHTML, isCurrent, currentRenderSeq } from '../render-guard.js';
 import { pref, getMingju } from '../store.js';
 import { esc } from '../py.js';
 import { zhShow } from '../fn.js';
 
 const RECENT = 24;   // 最近出过的题不重出
 const BZ_BEAT_MS = 1000;
-const HAN = /[\u3400-\u9fff]/;
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-async function bzView() {
-  app.innerHTML = topbar('补字', { back: true }) + '<div class="loading"></div>';
+async function bzView(seg, seq = currentRenderSeq()) {
+  setAppHTML(seq, topbar('补字', { back: true }) + '<div class="loading"></div>');
   let rows = null;
   try { rows = await getMingju(); } catch { rows = null; }
+  if (!isCurrent(seq)) return;
   if (!Array.isArray(rows) || !rows.length) {
-    app.innerHTML = topbar('补字', { back: true }) + emptyHtml('字', '名句索引未就绪<br>请刷新重试');
+    setAppHTML(seq, topbar('补字', { back: true }) + emptyHtml('字', '名句索引未就绪<br>请刷新重试'));
     return;
   }
   const bank = [];
@@ -29,7 +29,7 @@ async function bzView() {
     if (pair) { bank.push({ s: pair[0], a: r[1], t: r[2], id: r[3] }, { s: pair[1], a: r[1], t: r[2], id: r[3] }); }
   }
   if (!bank.length) {
-    app.innerHTML = topbar('补字', { back: true }) + emptyHtml('字', '题库拆解失败<br>请刷新重试');
+    setAppHTML(seq, topbar('补字', { back: true }) + emptyHtml('字', '题库拆解失败<br>请刷新重试'));
     return;
   }
   // 同位字池：`长度:位置` -> 字集合；另有全库字表兜底
@@ -53,13 +53,13 @@ async function bzView() {
   let rounds = parseInt(pref('bzrounds') || '0', 10) || 0;
   const recent = [];
 
-  app.innerHTML = topbar('补字', { back: true }) + `
+  setAppHTML(seq, topbar('补字', { back: true }) + `
     <div class="card">
       <h2>补字成诗</h2>
       <div class="section-tip" style="margin:4px 0 0">名句缺一字，四选一补回原句——出处是提示，记性是本事。共 ${bank.length} 句。</div>
       <div class="game-score" id="bz-score"></div>
     </div>
-    <div id="bz-round"><div class="loading"></div></div>`;
+    <div id="bz-round"><div class="loading"></div></div>`);
 
   const scoreEl = document.getElementById('bz-score');
   const roundEl = document.getElementById('bz-round');
@@ -128,7 +128,7 @@ async function bzView() {
         if (streak > best) { best = streak; pref('bzbest', String(best)); }
         paintScore();
         roundEl.querySelector('.game-foot').innerHTML =
-          `<span class="hb-src">${esc(zhShow(q.v.a))}《<a href="#/p/${q.v.id}">${esc(zhShow(q.v.t))}</a>》</span>` +
+          `<span class="hb-src">${esc(zhShow(q.v.a))}《<a href="#/p/${encodeURIComponent(String(q.v.id))}">${esc(zhShow(q.v.t))}</a>》</span>` +
           `<button type="button" class="set-toggle" id="bz-next">下一题</button>`;
         document.getElementById('bz-next').onclick = async () => {
           const nb = document.getElementById('bz-next');

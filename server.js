@@ -6,6 +6,7 @@ const zlib = require('zlib');
 const { spawn } = require('child_process');
 
 const ROOT = path.join(__dirname, 'site');
+const REAL_ROOT = fs.realpathSync(ROOT);
 const PORT = process.argv[2] ? parseInt(process.argv[2]) : 3737;
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -37,75 +38,121 @@ const SAFE = {
   'Content-Security-Policy': CSP,
 };
 
-// gzip 预压缩缓存（异步压缩，不阻塞事件循环）；条目封顶，防爬虫把全站 chunks 都压进内存
+// gzip 预压缩缓存（异步压缩，不阻塞事件循环）；条目数 + 字节数双上限
 const gzCache = new Map(); // file -> { src, z }
 const GZ_CACHE_MAX = 400;
+const GZ_CACHE_BYTES_MAX = 128 * 1024 * 1024;
+const GZ_ENTRY_MAX = 8 * 1024 * 1024;
+let gzCacheBytes = 0;
+
+// 第十一轮 D-1：所有响应统一合并 SAFE，错误响应与 TTS API 也不例外。
+function send(res, code, headers, body) {
+  res.writeHead(code, Object.assign({}, SAFE, headers || {}));
+  // body === null：只写头，留给后面的 createReadStream 管道写正文
+  if (body !== null) res.end(body === undefined ? undefined : body);
+}
+
+// 第十一轮 D-2：读流必须有 error handler，否则 build 并发重写文件时会终止进程；
+// 客户端提前断开时也要销毁读流。
+function pipeFile(res, file, opts) {
+  const rs = fs.createReadStream(file, opts);
+  rs.on('error', (e) => {
+    console.error('[stream] ' + file, e && e.message);
+    try {
+      if (!res.headersSent) send(res, 500, { 'Content-Type': 'text/plain; charset=utf-8' }, '500');
+      else res.destroy();
+    } catch {}
+  });
+  res.on('close', () => { try { rs.destroy(); } catch {} });
+  rs.pipe(res);
+}
 
 // 路径规范化：禁止 /../ 穿越到 ROOT 之外（decodeURIComponent 会把 %2e%2e%2f 还原成 ../）
+// 第十一轮 A-6：词法校验挡不住符号链接（fs.stat 会跟随），补 realpath 与 lstat 双重校验。
 function safeJoin(p) {
   const file = path.normalize(path.join(ROOT, p));
-  return (file === ROOT || file.startsWith(ROOT + path.sep)) ? file : null;
+  if (!(file === ROOT || file.startsWith(ROOT + path.sep))) return null;
+  try {
+    if (fs.lstatSync(file).isSymbolicLink()) return null;
+  } catch { return file; }   // 文件不存在：交给后面的 fs.stat 回 404
+  try {
+    const real = fs.realpathSync(file);
+    return (real === REAL_ROOT || real.startsWith(REAL_ROOT + path.sep)) ? real : null;
+  } catch { return null; }
 }
 
 function serveFile(req, res, p) {
-  const file0 = safeJoin(p);
-  if (!file0) { res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('403 Forbidden'); return; }
-  const file = file0;
+  const file = safeJoin(p);
+  if (!file) { send(res, 403, { 'Content-Type': 'text/plain; charset=utf-8' }, '403 Forbidden'); return; }
   fs.stat(file, (err, st) => {
     if (err || !st.isFile()) {
       // 第十轮 🟢-2：404 不回显请求路径（那是客户端自己发的东西，回显无意义还可能被外链利用）
       console.log('[404] ' + req.method + ' ' + p);
-      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('404 Not Found'); return;
+      send(res, 404, { 'Content-Type': 'text/plain; charset=utf-8' }, '404 Not Found'); return;
     }
     const type = MIME[path.extname(file).toLowerCase()] || 'application/octet-stream';
     const isData = p.indexOf('/data/') >= 0;
-    const baseHeaders = { ...SAFE, 'Content-Type': type, 'Cache-Control': isData ? 'no-store' : 'no-cache', 'Accept-Ranges': 'bytes' };
+    // SAFE 由 send() 统一合并；这里只放与表示相关的头
+    const baseHeaders = { 'Content-Type': type, 'Cache-Control': isData ? 'no-store' : 'no-cache', 'Accept-Ranges': 'bytes' };
     // HSTS 只在 TLS 下发：明文 HTTP 发了浏览器也忽略，还污染无痕本地调试
     if (req.socket && req.socket.encrypted) baseHeaders['Strict-Transport-Security'] = 'max-age=31536000';
 
-    // Range 请求（音频 seek）
+    // Range 请求（音频 seek）。第十一轮 P3：排除 bytes=- 与逗号多区间，显式校验数值。
     const range = req.headers.range;
-    if (range && /^bytes=\d*-\d*$/.test(range)) {
+    if (range && /^bytes=(\d+-\d*|-\d+)$/.test(range)) {
       const [s0, e0] = range.replace('bytes=', '').split('-');
       let start, end;
       if (s0 === '' && e0 !== '') {
-        // 后缀区间 bytes=-500：最后 500 字节（RFC 7233）。原先被当成前 501 字节（第十轮 🟡-2，2026-11-04）
-        start = Math.max(0, st.size - parseInt(e0));
+        // 后缀区间 bytes=-500：最后 500 字节（RFC 7233，第十轮 🟡-2）
+        start = Math.max(0, st.size - parseInt(e0, 10));
         end = st.size - 1;
       } else {
-        start = s0 === '' ? 0 : parseInt(s0);
-        end = e0 === '' ? st.size - 1 : parseInt(e0);
+        start = s0 === '' ? 0 : parseInt(s0, 10);
+        end = e0 === '' ? st.size - 1 : parseInt(e0, 10);
       }
-      if (start >= st.size || start > end) { res.writeHead(416, { 'Content-Range': 'bytes */' + st.size }); res.end(); return; }
+      if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || start >= st.size || start > end) {
+        send(res, 416, { 'Content-Range': 'bytes */' + st.size }); return;
+      }
       end = Math.min(end, st.size - 1);
-      res.writeHead(206, { ...baseHeaders, 'Content-Range': `bytes ${start}-${end}/${st.size}`, 'Content-Length': end - start + 1 });
-      fs.createReadStream(file, { start, end }).pipe(res);
+      send(res, 206, Object.assign({}, baseHeaders, {
+        'Content-Range': `bytes ${start}-${end}/${st.size}`,
+        'Content-Length': end - start + 1,
+      }), null);
+      pipeFile(res, file, { start, end });
       return;
     }
 
-    // gzip（仅文本类）
+    // gzip（仅文本类）。Vary 必须有：同一 URL 按 Accept-Encoding 返回两种表示。
     const accept = req.headers['accept-encoding'] || '';
-    if (st.size > 1024 && /\bgzip\b/.test(accept) && /^(text\/|application\/json|application\/manifest|image\/svg)/.test(type)) {
-      let cached = gzCache.get(file);
-      const use = (c) => {
-        res.writeHead(200, { ...baseHeaders, 'Content-Encoding': 'gzip', 'Content-Length': c.z.length });
-        res.end(c.z);
-      };
+    if (st.size > 1024 && st.size <= GZ_ENTRY_MAX && /\bgzip\b/.test(accept) &&
+        /^(text\/|application\/json|application\/manifest|image\/svg)/.test(type)) {
+      const cached = gzCache.get(file);
+      const use = (c) => send(res, 200, Object.assign({}, baseHeaders, {
+        'Vary': 'Accept-Encoding', 'Content-Encoding': 'gzip', 'Content-Length': c.z.length,
+      }), c.z);
       if (cached && cached.src === st.size && cached.mtime === st.mtimeMs) { use(cached); return; }
       fs.readFile(file, (err2, buf) => {
-        if (err2) { res.writeHead(500); res.end(); return; }
+        if (err2) { send(res, 500, { 'Content-Type': 'text/plain; charset=utf-8' }, '500'); return; }
         zlib.gzip(buf, { level: 6 }, (err3, z) => {
-          if (err3) { res.writeHead(200, baseHeaders); fs.createReadStream(file).pipe(res); return; }
+          if (err3) { send(res, 200, baseHeaders, null); pipeFile(res, file); return; }
           const c = { src: st.size, mtime: st.mtimeMs, z };
-          gzCache.set(file, c);
-          if (gzCache.size > GZ_CACHE_MAX) gzCache.delete(gzCache.keys().next().value);   // FIFO 淘汰
+          if (z.length <= GZ_ENTRY_MAX) {
+            gzCache.set(file, c); gzCacheBytes += z.length;
+            // 条目数 + 字节数双上限，避免 400 个大文件把内存吃满
+            while (gzCache.size && (gzCache.size > GZ_CACHE_MAX || gzCacheBytes > GZ_CACHE_BYTES_MAX)) {
+              const k = gzCache.keys().next().value;
+              const old = gzCache.get(k);
+              gzCacheBytes -= old ? old.z.length : 0;
+              gzCache.delete(k);
+            }
+          }
           use(c);
         });
       });
       return;
     }
-    res.writeHead(200, { ...baseHeaders, 'Content-Length': st.size });
-    fs.createReadStream(file).pipe(res);
+    send(res, 200, Object.assign({}, baseHeaders, { 'Content-Length': st.size }), null);
+    pipeFile(res, file);
   });
 }
 
@@ -134,13 +181,14 @@ function pumpTTS() {
     const child = spawn('node', [TTS_ONE, String(id)], { stdio: 'ignore' });
     ttsRunning.set(id, child);
     const done = () => {
-      ttsRunning.delete(id);
+      if (!ttsRunning.delete(id)) return;   // close + error 双触发只处理一次（第十一轮 D-3）
       TTS_STATUS.delete(id);
       pumpTTS();
     };
     child.on('close', done);
     child.on('error', done);
-    setTimeout(() => { try { child.kill(); } catch (e) {} }, 180000);
+    const killer = setTimeout(() => { try { child.kill(); } catch (e) {} }, 180000);
+    if (killer.unref) killer.unref();
   }
 }
 
@@ -165,12 +213,17 @@ setInterval(() => {
 let dayStamp = new Date().toISOString().slice(0, 10);
 let dayCount = 0;
 
+// 第十一轮 D-3：XFF 可由客户端随意伪造。只有请求确实来自可信代理时才采信，
+// 且取代理链最右一跳（代理追加的那一段），不取客户端能随便写的第一跳。
+const TRUST_PROXY_IPS = new Set((process.env.TRUST_PROXY_IPS || '127.0.0.1,::1,::ffff:127.0.0.1')
+  .split(',').map(s => s.trim()).filter(Boolean));
 function clientIp(req) {
-  if (TRUST_PROXY) {
-    const xff = (req.headers['x-forwarded-for'] || '').split(',')[0].trim();
-    if (xff) return xff;
+  const remote = (req.socket && req.socket.remoteAddress) || 'unknown';
+  if (TRUST_PROXY && TRUST_PROXY_IPS.has(remote)) {
+    const xff = (req.headers['x-forwarded-for'] || '').split(',').map(s => s.trim()).filter(Boolean);
+    if (xff.length) return xff[xff.length - 1];
   }
-  return (req.socket && req.socket.remoteAddress) || 'unknown';
+  return remote;
 }
 
 function overLimit(ip) {
@@ -189,18 +242,22 @@ function overLimit(ip) {
   return null;
 }
 
-// 只接受本站页面发起（挡住跨站盗刷）；带了 token 的调用不受此限
+// 只接受本站页面发起（挡住跨站盗刷）；带了 token 的调用不受此限。
+// 第十一轮 D-3：Host 头同样可伪造，只接受回环地址，且 Referer/Origin 必须与 Host 完全一致。
+const LOOPBACK_HOST = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i;
 function sameOriginOk(req) {
   const site = req.headers['sec-fetch-site'];
   if (site && site !== 'same-origin' && site !== 'none') return false;
   const ref = req.headers.referer || req.headers.origin || '';
   if (!ref) return true;                       // 隐私模式可能不带 Referer，交给限流兜底
-  try { return new URL(ref).host === req.headers.host; } catch (e) { return false; }
+  const host = String(req.headers.host || '');
+  if (!LOOPBACK_HOST.test(host)) return false;
+  try { return new URL(ref).host === host; } catch (e) { return false; }
 }
 
 function jsonErr(res, code, status, extra) {
-  res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' });
-  res.end(JSON.stringify(Object.assign({ status, ok: false }, extra || {})));
+  send(res, code, { 'Content-Type': 'application/json; charset=utf-8' },
+    JSON.stringify(Object.assign({ status, ok: false }, extra || {})));
 }
 
 function handleTTSApi(p, req, res) {
@@ -226,15 +283,14 @@ function handleTTSApi(p, req, res) {
   if (hit) { jsonErr(res, hit.code, 'limited', { message: hit.msg, retryAfter: hit.retry }); return; }
   const mp3 = path.join(AUDIO_DIR, id + '.mp3');
   if (fs.existsSync(mp3) && fs.statSync(mp3).size > 2000) {
-    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({ status: 'ready' }));
+    send(res, 200, { 'Content-Type': 'application/json; charset=utf-8' }, JSON.stringify({ status: 'ready' }));
     return;
   }
   if (TTS_STATUS.has(id)) {
     // 已在队列/运行中
   } else if (TTS_QUEUE.length >= TTS_MAX_QUEUE) {
-    res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({ status: 'busy', message: '合成队列已满，请稍后再试' }));
+    send(res, 503, { 'Content-Type': 'application/json; charset=utf-8' },
+      JSON.stringify({ status: 'busy', message: '合成队列已满，请稍后再试' }));
     return;
   } else {
     TTS_QUEUE.push(id);
@@ -243,8 +299,7 @@ function handleTTSApi(p, req, res) {
   }
   const ahead = ttsRunning.size + Math.max(TTS_QUEUE.indexOf(id), 0);
   const rounds = Math.ceil(Math.max(ahead, 1) / TTS_WORKERS);
-  res.writeHead(202, { 'Content-Type': 'application/json; charset=utf-8' });
-  res.end(JSON.stringify({
+  send(res, 202, { 'Content-Type': 'application/json; charset=utf-8' }, JSON.stringify({
     status: TTS_STATUS.get(id) || 'queued',
     ahead: Math.max(ahead, 0),
     workers: TTS_WORKERS,
@@ -267,8 +322,7 @@ const server = http.createServer((req, res) => {
   try {
     p = decodeURIComponent(req.url.split('?')[0]);
   } catch {
-    res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
-    res.end('400 Bad Request');
+    send(res, 400, { 'Content-Type': 'text/plain; charset=utf-8' }, '400 Bad Request');
     return;
   }
   try {
@@ -279,7 +333,7 @@ const server = http.createServer((req, res) => {
   } catch (e) {
     // 其它同步异常也别让进程退出：记一行日志，回 500
     console.error('[req] 处理异常', req.method, req.url, e && e.message);
-    try { res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('500'); } catch {}
+    try { send(res, 500, { 'Content-Type': 'text/plain; charset=utf-8' }, '500'); } catch {}
   }
 });
 
@@ -298,7 +352,13 @@ server.on('error', (e) => {
   process.exit(1);
 });
 
-server.listen(PORT, () => {
+// 第十一轮 A-6：显式绑回环地址。不指定 host 时 Node 会监听 0.0.0.0，
+// 日志却写 127.0.0.1，局域网任何主机都能访问（叠加符号链接风险更严重）。
+server.requestTimeout = 300000;
+server.headersTimeout = 60000;
+server.keepAliveTimeout = 5000;
+server.maxConnections = 256;
+server.listen(PORT, '127.0.0.1', () => {
   console.log(`静态服务器已启动: http://127.0.0.1:${PORT} (异步gzip + Range + TTS队列${TTS_MAX_QUEUE})`);
   console.log(`TTS 防护: ${TTS_TOKEN ? '口令模式' : '同源模式'} · 并发 ${TTS_WORKERS} · 单 IP ${TTS_PER_MIN}/分 ${TTS_PER_HOUR}/时 · 全站 ${TTS_DAILY_CAP}/日${TRUST_PROXY ? ' · 信任代理头' : ''}`);
 });

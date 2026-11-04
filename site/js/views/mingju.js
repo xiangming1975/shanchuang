@@ -2,6 +2,7 @@
 // 数据：idx/mingju.json → [名句, 作者, 题, 作品id, 朝代, 集合名, 标签[]]
 // 筛选：朝代（按 7 个时段）/ 作者（出现最多的 12 位）/ 题材（标签里命中题材桶的）
 import { app, topbar, emptyHtml } from '../vcommon.js';
+import { setAppHTML, isCurrent, currentRenderSeq } from '../render-guard.js';
 import { getMingju, getTagBuckets, setNavCtx } from '../store.js';
 import { pagedList } from './paged.js';
 import { esc } from '../py.js';
@@ -24,12 +25,13 @@ const DYN_OF = (() => {
 
 const PAGE = 40;
 
-async function mingjuView() {
-  app.innerHTML = topbar('名句', { back: true }) + '<div class="loading"></div>';
+async function mingjuView(seg, seq = currentRenderSeq()) {
+  setAppHTML(seq, topbar('名句', { back: true }) + '<div class="loading"></div>');
   let rows = null;
   try { rows = await getMingju(); } catch { rows = null; }
+  if (!isCurrent(seq)) return;
   if (!Array.isArray(rows) || !rows.length) {
-    app.innerHTML = topbar('名句', { back: true }) + emptyHtml('句', '名句索引未就绪，请刷新重试');
+    setAppHTML(seq, topbar('名句', { back: true }) + emptyHtml('句', '名句索引未就绪，请刷新重试'));
     return;
   }
 
@@ -39,6 +41,7 @@ async function mingjuView() {
     const b = await getTagBuckets();
     themeTags = (b.rows.theme || []).slice(0, 14).map(x => x[0]);
   } catch {}
+  if (!isCurrent(seq)) return;
 
   // 作者频次（只留出现 ≥3 次的，否则一屏全是只出现一次的人）
   const authorCount = new Map();
@@ -51,7 +54,7 @@ async function mingjuView() {
 
   const state = { dyn: '', author: '', tag: '' };
 
-  app.innerHTML = topbar('名句', { back: true, extra: `<span class="act">${rows.length} 条</span>` }) + `
+  setAppHTML(seq, topbar('名句', { back: true, extra: `<span class="act">${rows.length} 条</span>` }) + `
     <div class="card">
       <h2>名句</h2>
       <div class="section-tip" style="margin:4px 0 0">共 ${rows.length} 条，点任意一句可跳到整首</div>
@@ -71,7 +74,7 @@ async function mingjuView() {
     </div>` : ''}
     <div class="group-title" id="mj-count"></div>
     <div id="mj-list"></div>
-    <div style="text-align:center;margin:14px 0"><button class="set-toggle hidden" id="mj-more">加载更多</button></div>`;
+    <div style="text-align:center;margin:14px 0"><button class="set-toggle hidden" id="mj-more">加载更多</button></div>`);
 
   const listEl = document.getElementById('mj-list');
   const countEl = document.getElementById('mj-count');

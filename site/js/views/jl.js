@@ -8,7 +8,8 @@
 //   你接上后山窗接——句库接不上你句的尾字，山窗认输，这一链是你的。
 // 得星：同飞花令/合璧——本局连续接上十句得一星（starsFor），此后每句一星，即记即存
 //   jlstars；最高连对 jlbest、收局次数 jlrounds。随备份导出，首页行令卡展示。
-import { app, topbar, emptyHtml, popupMsg, fhBare, fhVerifyHit, starsFor } from '../vcommon.js';
+import { app, topbar, emptyHtml, popupMsg, fhBare, fhVerifyHit, starsFor, sleep, HAN } from '../vcommon.js';
+import { setAppHTML, isCurrent, currentRenderSeq } from '../render-guard.js';
 import { pref, cachedText, getPoem, getMingju } from '../store.js';
 import { esc } from '../py.js';
 import { zhShow, queryVariants } from '../fn.js';
@@ -17,8 +18,6 @@ const JL_R = 3;              // 句库数据版本：重跑 etl/build-jl.mjs 后
 const JL_BEAT_MIN_MS = 1200; // 山窗接句前停的下限
 const JL_BEAT_MAX_MS = 2600; // 上限
 const HIST_SHOW = 10;        // 链上只显示最近这些（连对另记，不受影响）
-const HAN = /[\u3400-\u9fff]/;
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 // 首字 -> Promise<[[句, 作者, 题, id], ...]>，同字整页会话只取一次
 // 发布瘦身（2026-11-03）：17,547 个字里 >=100KB 的 2,445 个仍是独立文件，其余 15,102 个
@@ -48,8 +47,8 @@ const tailChar = (s) => {
   return a.length ? a[a.length - 1] : '';
 };
 
-async function jlView() {
-  app.innerHTML = topbar('接龙', { back: true }) + '<div class="loading"></div>';
+async function jlView(seg, seq = currentRenderSeq()) {
+  setAppHTML(seq, topbar('接龙', { back: true }) + '<div class="loading"></div>');
   // 链字表 + 名句库（起句用）
   let meta = null, mjRows = null;
   try {
@@ -57,8 +56,9 @@ async function jlView() {
   } catch { meta = null; }
   if (meta && meta.own) { jlOwn = new Set(meta.own); jlBuckets = meta.buckets || 64; }
   try { mjRows = await getMingju(); } catch { mjRows = null; }
+  if (!isCurrent(seq)) return;
   if (!meta || !Array.isArray(meta.chars) || !meta.chars.length || !Array.isArray(mjRows) || !mjRows.length) {
-    app.innerHTML = topbar('接龙', { back: true }) + emptyHtml('链', '句库未就绪<br>请刷新重试');
+    setAppHTML(seq, topbar('接龙', { back: true }) + emptyHtml('链', '句库未就绪<br>请刷新重试'));
     return;
   }
   const charSet = new Set(meta.chars);
@@ -72,7 +72,7 @@ async function jlView() {
     }
   }
   if (!starts.length) {
-    app.innerHTML = topbar('接龙', { back: true }) + emptyHtml('链', '起句题库拆解失败<br>请刷新重试');
+    setAppHTML(seq, topbar('接龙', { back: true }) + emptyHtml('链', '起句题库拆解失败<br>请刷新重试'));
     return;
   }
 
@@ -89,13 +89,13 @@ async function jlView() {
   // 一局终了：真接过句（streak ≥ 1）才算局——只点开看看、随手重开不算
   const closeRound = () => { if (streak >= 1) { rounds++; pref('jlrounds', String(rounds)); } };
 
-  app.innerHTML = topbar('接龙', { back: true }) + `
+  setAppHTML(seq, topbar('接龙', { back: true }) + `
     <div class="card">
       <h2>诗词接龙</h2>
       <div class="section-tip" style="margin:4px 0 0">你一句山窗一句，下句首字接上句尾字。接不上链就断——拼的是谁的储备厚。共 ${meta.chars.length} 个起头字。</div>
       <div class="game-score" id="jl-score"></div>
     </div>
-    <div id="jl-board"><div class="loading"></div></div>`;
+    <div id="jl-board"><div class="loading"></div></div>`);
 
   const scoreEl = document.getElementById('jl-score');
   const board = document.getElementById('jl-board');
@@ -111,7 +111,7 @@ async function jlView() {
         `<div class="fh-src">句库未检得——接不上，输了这一局</div></div>`
       : `<div class="card"><div class="fh-who">${h.who}</div>` +
         `<div class="fh-sent">${esc(zhShow(h.s))}</div>` +
-        `<div class="fh-src">——${h.a ? esc(zhShow(h.a)) + ' ' : ''}《${esc(zhShow(h.t))}》${h.id != null ? ` <a href="#/p/${h.id}">读全诗</a>` : ''}</div></div>`;
+        `<div class="fh-src">——${h.a ? esc(zhShow(h.a)) + ' ' : ''}《${esc(zhShow(h.t))}》${h.id != null ? ` <a href="#/p/${encodeURIComponent(String(h.id))}">读全诗</a>` : ''}</div></div>`;
 
   // 收局报告：不判胜负，只夸你连出的句数、再鼓劲（同飞花令，2026-11-01）
   const reportHtml = (extra) => `

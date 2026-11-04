@@ -8,9 +8,9 @@
 
 ## 0. 三条铁律
 
-1. **不要自行发起构建。** 构建的**唯一入口**是 `bash etl/safe-build.sh`（自带 `ops/.build.lock`、备份 `site/data`、总量校验、失败回滚）。
-   **禁止直接跑 `npm run build`，更禁止直接 `node etl/build.js`**——绕过锁与备份，正是 2026-11-03 把 214 万条重建丢成 47 万条、差点覆盖线上的事故原因。
-   另注意：构建产出的是**明文** `site/data`（约 5.87GB），要部署必须再跑 `npm run pack -- --go && npm run gz -- --go` 才回到 `.gz` 形态（2.7GB）。
+1. **不要自行发起构建。** 构建的**唯一入口**是 `bash etl/safe-build.sh`（原子锁 `ops/.build.lock.d`、备份 `site/data`、总量/集合/分块校验、失败回滚）。
+   **`npm run build` 已指向 `bash etl/safe-build.sh`；禁止 `build:raw` / `node etl/build.js`**（仅供调试，绕过锁与备份，正是 2026-11-03 把 214 万条重建丢成 47 万条、差点覆盖线上的事故原因）。
+   完整链路用 `bash etl/safe-build.sh --deploy-ready`：build + pack + gz 在同一把锁与同一个回滚事务内完成，产物才回到 `.gz` 形态（2.7GB）。
    要不要构建，永远由用户决定；`HANDOFF.md` §0 与 `ops/state.json` 是这条规约的原始出处。
 
    **用户已明确要求（2026-11-04，强制）：重建数据必须先问他，并说清为什么要 build。**
@@ -73,6 +73,7 @@ git push                     # 走 ssh-443，几秒钟
 | `server.js`、`package.json`、`deploy-cf.sh`、`.gitignore`、`.gitattributes` | `cf-token.txt`（凭据，**绝不能入库**） |
 
 `site/data/` 里**只有 4 个文件**允许入库：`idx/pingze.json`、`idx/t2s.json.gz`、`idx/s2t.json.gz`、`idx/s2td.json.gz`。它们是测试要读的。
+另有 `dedup-remap.json.gz` 是 `tests/state.test.mjs` 的**测试夹具依赖**（见第十一轮 E-8）：当前未入库，测试全绿需要它在 `site/data/` 下；是否纳入放行清单须单独评估。此处只说明现状，**不要改 `.gitignore`**。
 
 ---
 
@@ -81,7 +82,7 @@ git push                     # 走 ssh-443，几秒钟
 | 任务 | 要不要 build | 说明 |
 |---|---|---|
 | **改某篇正文的一个错字** | 不要 | 改 `site/data/poems/<集合>-<NNNN>.json.gz` 里那条记录，并 bump `manifest.json` 的 `v`（否则读者缓存不失效）。要写成幂等脚本放 `etl/`，详细做法见 `HANDOFF.md` §12 |
-| **加新集合 / 重建全库** | 要，且只能 `bash etl/safe-build.sh` | 先跑 `node etl/preflight.mjs` 自检（当前可通过）。构建后必须 `npm run pack -- --go && npm run gz -- --go`。**必须用户明确要求，不要自行发起** |
+| **加新集合 / 重建全库** | 要，且只能 `bash etl/safe-build.sh` | 先跑 `node etl/preflight.mjs` 自检（当前可通过）。完整链路用 `bash etl/safe-build.sh --deploy-ready`（build+pack+gz 同一事务），再 `bash deploy-cf.sh --skip-build` 发布。**必须用户明确要求，不要自行发起** |
 | **出新数据快照到 Release** | 不要 | `7z a -mx=0 -v1400m ... site/data` 分卷，然后由**用户手动**在网页上传（`api.github.com` 不通） |
 
 > 现状提醒：`etl/out/` 现有 **8.6GB 源**（`poems3/poems4/poems-extra79` 等），`node etl/preflight.mjs` **当前是通过的**。
@@ -95,15 +96,26 @@ git push                     # 走 ssh-443，几秒钟
 
 ## 6. 发布到线上（只有用户要发布时才做）
 
+**只改代码/文档（数据未变）** —— 日常发布的唯一命令：
+
 ```bash
 cd /c/Users/xiang/Downloads/poetry-site
-export CLOUDFLARE_API_TOKEN=$(tr -d ' \r\n\t' < /c/Users/xiang/Downloads/cf-token.txt)
-export CLOUDFLARE_ACCOUNT_ID=ff00756871f02220c9ab555b616143b5
-npx --yes wrangler@latest pages deploy site --project-name shanchuang --branch main --commit-dirty=true
+bash deploy-cf.sh --skip-build
 ```
 
-- **绝不要用 `wrangler login`**：它要跳 `welcome.developers.workers.dev`，国内超时。用上面的 API Token。
-- `bash deploy-cf.sh --skip-build` 是等价入口（`wrangler pages deploy` + 同步 CloudBase 镜像）。`HANDOFF.md` §0 说的「只改代码一律 `--skip-build`」即指此路。但 CloudBase 体验版 3GB 已用约 2.62GB，**通常不必同步镜像**，直接用上面的 wrangler 命令即可。
+**完整链路（数据也变了，须用户明确要求）** = `bash etl/safe-build.sh --deploy-ready` + `bash deploy-cf.sh`：
+
+```bash
+cd /c/Users/xiang/Downloads/poetry-site
+bash etl/safe-build.sh --deploy-ready   # 数据准备：build + pack + gz，同一把锁 / 同一个回滚事务
+bash deploy-cf.sh --skip-build          # 数据已就绪，跳过构建直接发布
+```
+
+> `bash deploy-cf.sh`（不带参数）内部非 `--skip-build` 分支即调用 `bash etl/safe-build.sh --deploy-ready`；
+> 若已单独跑过上一行准备数据，务必加 `--skip-build`，避免重复构建。
+
+- **绝不要用 `wrangler login`**：它要跳 `welcome.developers.workers.dev`，国内超时；`deploy-cf.sh` 用 API Token 注入鉴权（token 文件默认 `/c/Users/xiang/Downloads/cf-token.txt`），不要手工 `wrangler` 直连。
+- **CloudBase 同步策略（统一规则）**：**只改代码不同步镜像**（CloudBase 体验版 3GB 已用约 2.62GB，日常发布不碰镜像）；确实需要镜像时，显式执行 cosfix 流程。
 - 只改 js/css/html 时通常只传几个文件、几秒完成（Pages 按内容哈希去重）；全套数据只在首次上传时需要 11 分钟。
 - Token 失效时：请用户在控制台重建一个 `Account · Cloudflare Pages · Edit` 的 Token，存回 `cf-token.txt`。用完可提醒他吊销。
 - 托管方硬限制：每站 **20,000 文件**、单文件 **25MiB**。`pack` 与 `gz` 就是为这两条准备的。

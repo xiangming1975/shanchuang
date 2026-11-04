@@ -7,8 +7,16 @@
 // 幂等：重跑无副作用（无 stale 行时全部原样写回）
 const fs = require('fs');
 const path = require('path');
+const zlib = require('zlib');
 const DATA = path.join(__dirname, '..', 'site', 'data');
-const read = p => fs.readFileSync(path.join(DATA, p), 'utf8');
+// 明文优先；gz 化后明文可能被移走，回退读同名 .json.gz（离线脚本不依赖明文存在）
+const read = p => {
+  const full = path.join(DATA, p);
+  if (fs.existsSync(full)) return fs.readFileSync(full, 'utf8');
+  const gz = full + '.gz';
+  if (fs.existsSync(gz)) return zlib.gunzipSync(fs.readFileSync(gz)).toString('utf8');
+  throw new Error('缺文件（明文/gz 均无）: ' + p);
+};
 const readJ = p => JSON.parse(read(p));
 const write = (p, s) => fs.writeFileSync(path.join(DATA, p), s);
 

@@ -4,6 +4,7 @@ const SHELL = [
   'css/style.css',
   'js/app.js',
   'js/store.js',
+  'js/render-guard.js',
   'js/views.js',
   'js/vcommon.js',
   'js/card.js',
@@ -47,22 +48,32 @@ const SHELL = [
   'icons/shot-search.png',
   'icons/icon.svg'
 ];
-const CACHE = 'shici-shell-v352';
+const CACHE = 'shici-shell-v353';
+const CACHE_PREFIX = 'shici-shell-';
 
 self.addEventListener('install', e => {
   e.waitUntil((async () => {
     const cache = await caches.open(CACHE);
     // 逐项预缓存：addAll 是「全成或全不成」，任何一个 404 都会让整个离线能力失效。
-    // history.js 漏进 SHELL 那次就是这么静默坏掉的（失败只记 warn，不拖垮其余）。
+    const failed = [];
     await Promise.all(SHELL.map(u =>
       cache.add(new Request(u, { cache: 'reload' }))
-        .catch(err => console.warn('[sw] SHELL 预缓存失败：', u, err && err.message))
+        .catch(err => { failed.push(u); console.warn('[sw] SHELL 预缓存失败：', u, err && err.message); })
     ));
+    // 第十一轮 C-7：任一资源失败都不能 skipWaiting。否则 activate 会删光旧缓存，
+    // 该资源在新缓存缺失、旧缓存已清，直到下次 SW 更新前永久离线不可用。
+    if (failed.length) {
+      await caches.delete(CACHE);
+      throw new Error('[sw] SHELL 预缓存失败 ' + failed.length + ' 项：' + failed.join(', '));
+    }
     await self.skipWaiting();
   })());
 });
 self.addEventListener('activate', e => {
-  e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim()));
+  // 第十一轮 C-8：只清自家前缀，别把同 origin 下其它 SW / 用途的缓存一并删掉。
+  e.waitUntil(caches.keys()
+    .then(keys => Promise.all(keys.filter(k => k !== CACHE && k.startsWith(CACHE_PREFIX)).map(k => caches.delete(k))))
+    .then(() => self.clients.claim()));
 });
 self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
@@ -73,7 +84,7 @@ self.addEventListener('fetch', e => {
   // 走下面那条「网络优先」会每次刷新都回源校验一遍，没必要。
   if (url.pathname.includes('/fonts/')) {
     e.respondWith((async () => {
-      const hit = await caches.match(e.request);
+      const hit = await caches.match(e.request, { cacheName: CACHE });
       if (hit) return hit;
       const resp = await fetch(e.request);
       if (resp.ok) {
@@ -94,11 +105,12 @@ self.addEventListener('fetch', e => {
         caches.open(CACHE).then(c => c.put(e.request, copy));
       }
       return resp;
-    }).catch(() => caches.match(e.request).then(hit => hit ||
+    // 第十一轮 C-8：match 限定 cacheName，避免新旧缓存并存时命中旧条目。
+    }).catch(() => caches.match(e.request, { cacheName: CACHE }).then(hit => hit ||
       // 第十轮 🟠-1（2026-11-04）：只有页面导航（SPA 路由）才回退 index.html。
       // 子资源（JS/CSS/vendor）失败若回退 HTML，会被浏览器当 JS/CSS 解析——
       // vendor 拼音库离线首载正是这种错配（HTML-200 触发 onload、内容全是标签）。
       // 改为返回网络错误：script 的 onerror / 模块 import 的 reject 正常触发各自降级。
-      (e.request.mode === 'navigate' ? caches.match('index.html') : Response.error())))
+      (e.request.mode === 'navigate' ? caches.match('index.html', { cacheName: CACHE }) : Response.error())))
   );
 });

@@ -6,7 +6,7 @@ const ROOT = 'C:/Users/xiang/Downloads/poetry-site';
 const OUT = path.join(ROOT, 'etl', 'out');
 const BUILDJS = path.join(ROOT, 'etl', 'build.js');
 const MANIFEST = path.join(ROOT, 'site', 'data', 'manifest.json');
-const LOCK = path.join(ROOT, 'ops', '.build.lock');
+const LOCK = path.join(ROOT, 'ops', '.build.lock.d');   // safe-build.sh 的原子锁目录
 const BASELINE = 2145874;
 
 let fail = 0;
@@ -38,20 +38,23 @@ if (n >= 79) ok(`build.js COLLECTIONS=${n}`); else bad(`build.js COLLECTIONS=${n
 if (src.includes('poems-extra79')) ok('extras 含 poems-extra79'); else bad('extras 缺 poems-extra79');
 if (src.includes('process.env.SITE_DIR')) ok('SITE 支持 SITE_DIR 覆盖'); else warn('SITE 未支持 env 覆盖（safe-build 不需要）');
 
-// 3) 当前线上基线
+// 3) 当前线上基线：总数允许向上、不允许向下（精确基线 2,145,874），并校验 79 集合
 if (fs.existsSync(MANIFEST)) {
   try {
     const m = JSON.parse(fs.readFileSync(MANIFEST, 'utf8'));
-    if (m.total >= BASELINE * 0.99) ok(`当前 site/data total=${m.total} / ${m.collections.length} 集合`);
+    if (m.total >= BASELINE) ok(`当前 site/data total=${m.total} >= 基线 ${BASELINE}`);
     else bad(`当前 site/data total=${m.total} 低于基线 ${BASELINE}（疑似已缩水！）`);
+    if (m.collections.length === 79) ok('集合数 = 79');
+    else bad(`集合数 ${m.collections.length} != 79`);
   } catch (e) { warn('site/data/manifest.json 解析失败: ' + e.message); }
 } else warn('当前无 site/data/manifest.json（首次构建？）');
 
-// 4) 锁（信息提示，不拦截；真正的并发拦截在 safe-build.sh）
+// 4) 锁（信息提示，不拦截；真正的并发拦截在 safe-build.sh 用 mkdir 原子加锁）
 if (fs.existsSync(LOCK)) {
-  const ts = parseInt(fs.readFileSync(LOCK, 'utf8').trim(), 10) || 0;
+  let ts = 0;
+  try { ts = parseInt(fs.readFileSync(path.join(LOCK, 'ts'), 'utf8').trim(), 10) || 0; } catch {}
   const age = Math.floor(Date.now() / 1000) - ts;
-  if (age < 120 * 60) warn(`构建锁存在（${age}s 前写入），可能有构建在跑（safe-build 会自行拦并发）`);
+  if (age < 120 * 60) warn(`原子锁目录存在（${age}s 前写入），可能有构建在跑（safe-build 会自行拦并发）`);
   else warn(`陈旧锁（${Math.floor(age / 60)} 分钟前），safe-build 会自动清理`);
 } else ok('无构建锁');
 

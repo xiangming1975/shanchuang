@@ -19,9 +19,10 @@ const DATA = path.resolve('site', 'data');
 const BAK = path.resolve('..', 'backup-json-20261103');
 const GO = process.argv.includes('--go');
 const SKIP = new Set(['manifest.json']);
-// 这两个小表被 tests 直接读明文（rules 读 pingze、zh 读 s2td），保留 .json 副本（同时也写 .gz，
-// 免得线上每次多一次 404 回退）。
-const KEEP_PLAIN = new Set(['idx/pingze.json', 'idx/s2td.json', 'idx/t2s.json', 'idx/s2t.json']);
+// 这些文件被 tests / 离线脚本直接读明文（rules 读 pingze、zh 读 s2td，
+// etl/patch-derived-20261101.cjs 读 dedup-remap），保留 .json 副本供离线脚本读取；
+// 同时也写 .gz 供线上 store 用，免得线上每次多一次 404 回退。
+const KEEP_PLAIN = new Set(['idx/pingze.json', 'idx/s2td.json', 'idx/t2s.json', 'idx/s2t.json', 'dedup-remap.json']);
 
 function walk(dir, out = []) {
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -47,8 +48,9 @@ for (const f of files) {
   if (GO) {
     fs.writeFileSync(f + '.gz', gz);
     if (!KEEP_PLAIN.has(rel)) {
-      const b = path.join(BAK, rel);
+      let b = path.join(BAK, rel);
       fs.mkdirSync(path.dirname(b), { recursive: true });
+      if (fs.existsSync(b)) b = path.join(BAK, `${rel}.${Date.now()}`);  // 备份目标已存在时不覆盖旧备份
       fs.renameSync(f, b);   // 原文件移到备份区，不删除
     }
   }

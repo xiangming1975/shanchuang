@@ -1,5 +1,6 @@
 // 页面：tag
-import { app, topbar, rowLink, emptyHtml } from '../vcommon.js';
+import { app, topbar, rowLink, emptyHtml, safeDecode } from '../vcommon.js';
+import { setAppHTML, isCurrent, currentRenderSeq } from '../render-guard.js';
 import { loadRowsByIds, dedupeRows } from './list.js';
 import { getTags, prefetchPoems, setNavCtx } from '../store.js';
 import { pagedList } from './paged.js';
@@ -29,21 +30,21 @@ function tagKeyOf(tags, raw) {
   return tags.k[n] ? n : '';
 }
 
-async function tagView(seg) {
-  let raw = '';
-  try { raw = decodeURIComponent(seg[0] || ''); } catch { raw = seg[0] || ''; }
-  app.innerHTML = topbar(raw || '标签', { back: true }) + '<div class="loading"></div>';
+async function tagView(seg, seq = currentRenderSeq()) {
+  const raw = safeDecode(seg[0] || '');
+  setAppHTML(seq, topbar(raw || '标签', { back: true }) + '<div class="loading"></div>');
   let tags = null;
   try { tags = await getTags(); } catch { tags = null; }
+  if (!isCurrent(seq)) return;
   if (!tags || !tags.k) {
-    app.innerHTML = topbar(raw || '标签', { back: true }) + emptyHtml('签', '标签数据未就绪，请刷新重试');
+    setAppHTML(seq, topbar(raw || '标签', { back: true }) + emptyHtml('签', '标签数据未就绪，请刷新重试'));
     return;
   }
   const key = tagKeyOf(tags, raw);
   const entry = key ? tags.k[key] : null;
   if (!entry) {
-    app.innerHTML = topbar(raw || '标签', { back: true }) +
-      emptyHtml('空', '没有这个标签<br><a href="#/" style="color:var(--accent)">回首页</a>');
+    setAppHTML(seq, topbar(raw || '标签', { back: true }) +
+      emptyHtml('空', '没有这个标签<br><a href="#/" style="color:var(--accent)">回首页</a>'));
     return;
   }
   const [tab, ids] = entry;
@@ -64,7 +65,7 @@ async function tagView(seg) {
   rel.sort((a, b) => b.n - a.n);
   const relHtml = rel.slice(0, 12).map(r => `<a href="#/t/${encodeURIComponent(r.k)}">${esc(zhShow(r.k))}</a>`).join('');
 
-  app.innerHTML = topbar(zhShow(key), { back: true, extra: `<span class="act">${ids.length} 篇</span>` }) + `
+  setAppHTML(seq, topbar(zhShow(key), { back: true, extra: `<span class="act">${ids.length} 篇</span>` }) + `
     <div class="card">
       <h2>#${esc(zhShow(key))}</h2>
       <div class="section-tip" style="margin:4px 0 0">共 ${ids.length} 篇${tab ? ' · 多见于「' + esc(zhShow(tab)) + '」类合集' : ''}</div>
@@ -72,7 +73,7 @@ async function tagView(seg) {
     ${relHtml ? '<div class="group-title">相关标签</div><div class="tagrow">' + relHtml + '</div>' : ''}
     <div class="group-title">作品</div>
     <div class="list" id="tag-list"><div class="loading"></div></div>
-    <div style="text-align:center;margin:14px 0"><button class="set-toggle hidden" id="tag-more">加载更多</button></div>`;
+    <div style="text-align:center;margin:14px 0"><button class="set-toggle hidden" id="tag-more">加载更多</button></div>`);
 
   const listEl = document.getElementById('tag-list');
   const moreBtn = document.getElementById('tag-more');

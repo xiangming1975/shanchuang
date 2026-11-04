@@ -1,5 +1,6 @@
 // 页面：home
 import { app, rowLink, reciteDue, PROSE_SET, layoutSentences, makeLineFits } from '../vcommon.js';
+import { setAppHTML, isCurrent, currentRenderSeq } from '../render-guard.js';
 import { getManifest, getPoem, getHistory, getRecites, getFavs, getExcerpts, noteTotal, luckyPoemId, readStats, cachedText, colIdOf, pref, clearNavCtx } from '../store.js';
 import { esc } from '../py.js';
 import { lunarDate, solarTermDate, solarTermName } from '../lunar.js';
@@ -86,10 +87,10 @@ function homeVerseKey(now) {
   return null;
 }
 
-async function fillHomeVerse() {
+async function fillHomeVerse(seq) {
   try {
     const data = await loadHomeVerses();
-    if (!data) return;
+    if (!isCurrent(seq) || !data) return;
     const key = homeVerseKey(new Date());
     let pool = (key && data.cat[key]) || data.win || [];
     if (!pool.length) pool = data.win || [];
@@ -104,9 +105,10 @@ async function fillHomeVerse() {
   } catch (e) {}
 }
 
-async function homeView() {
+async function homeView(seg, seq = currentRenderSeq()) {
   clearNavCtx();   // 回首页 = 新会话：退出阅读队列（2026-11-01 navCtx）
   const m = await getManifest();
+  if (!isCurrent(seq)) return;
   // 2026-10-28 首页极简化：28 个集合砖块、按朝代/按主题标签条、课文横幅全部移出。
   // 它们都搬进了 #/tags（现名「目录」），首页只留两个动作：随便看看、全部标签。
   // 好处不只是版面：首页不再取 tags.json（284KB）与 dyn.json（4KB），每次进首页都省这 288KB 解析。
@@ -167,10 +169,12 @@ async function homeView() {
         '<p class="dp">' + lines + '</p></a>';
     }
   } catch (e) {}
+  if (!isCurrent(seq)) return;
   const his = getHistory();
   let hisHtml = '';
   if (his.length) {
     const last = await getPoem(his[0]).catch(() => null);
+    if (!isCurrent(seq)) return;
     if (last) {
       hisHtml = '<div class="group-title gt-row"><span>继续阅读</span><a href="#/h">阅读历史</a></div>' +
         '<div class="list">' + rowLink(last) + '</div>';
@@ -205,6 +209,7 @@ async function homeView() {
   let dueHtml = '';
   if (dueList.length) {
     const duePoems = (await Promise.all(dueList.slice(0, 3).map(d => getPoem(d.id).catch(() => null)))).filter(Boolean);
+    if (!isCurrent(seq)) return;
     dueHtml = '<div class="card" id="due-card"><h2>今日复习</h2>' +
       '<div class="achv-streak">有 <b>' + dueList.length + '</b> 首按遗忘曲线到期待复习</div>' +
       (duePoems.length ? '<div class="list">' + duePoems.map(p => rowLink(p)).join('') + '</div>' : '') +
@@ -218,7 +223,7 @@ async function homeView() {
 
   const THANKS = [
     '    <div class="group-title">致谢</div>',
-    '    <div class="card" data-fold><h2 class="fold-head">数据来源与致谢<span class="fold-btn">+</span></h2><div class="fold-body">',
+    '    <div class="card" data-fold><button type="button" class="fold-head" aria-expanded="false">数据来源与致谢<span class="fold-btn">+</span></button><div class="fold-body">',
     '      <div class="annotate tight">',
     '        <p>本站语料与功能构建于数十个开放数据集与工具，完整清单（数据集名称 / 网址 / 版权 / 内容备注）见 <a href="#/src">数据来源页</a>。</p>',
     '        <p>感谢 <b>DevEco Code</b> 与 <b>GLM-5.3</b> 大模型——全库 62.7 万条逐条审计，识破「存活条数被误当 id 跨度」这一隐性缺陷：以 manifest 补 `span` 一枚字段的最小代价，治愈标签页 43% 错行、集合尾区 2.6 万首的翻页断头与抽签盲区，《題白崖三洞》们的上一首/下一首由此复明。</p>',
@@ -271,7 +276,7 @@ async function homeView() {
     ? '<div class="section-tip" style="text-align:center;margin:14px 0 6px">明日「' + esc(zhShow(tmName)) + '」· 应景的诗已经备好</div>'
     : '<div class="section-tip" style="text-align:center;margin:14px 0 6px">明日的诗已在窗边备好</div>';
 
-  app.innerHTML =
+  setAppHTML(seq,
     '<div class="brand"><div class="logo">山窗</div>' +
     '<div class="slogan" id="home-verse"></div></div>' +
     '<div class="lucky-row">' +
@@ -285,7 +290,7 @@ async function homeView() {
     dueHtml +
     achvHtml +
     THANKS +
-    tmHtml;
+    tmHtml);
 
   // 「随便看看」的绑定必须放在 app.innerHTML 之后。
   // 之前这段写在 innerHTML 之前，那一刻 #lucky-btn 还不存在，getElementById 返回 null，
@@ -299,10 +304,11 @@ async function homeView() {
       const id = await luckyPoemId().catch(() => null);
       luckyBtn.disabled = false;
       luckyBtn.textContent = '随便看看';
+      if (!isCurrent(seq)) return;
       if (id != null) location.hash = '#/p/' + id;
     };
   }
-  fillHomeVerse();
+  fillHomeVerse(seq);
 
   // 按主题浏览、按朝代、课文横幅：2026-10-28 全部移入 #/tags（目录）。
   // 那次改动也顺手删掉了这里的异步填充——首页不再需要 tags.json 与 dyn.json。

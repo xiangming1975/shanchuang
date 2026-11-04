@@ -1,7 +1,7 @@
 # 山窗 · 千年古诗文（poetry-site）交接文档
 
 > 更新：2026-11-01（第八轮审查修正落地：ft pdb 分片 null 清洗、派生索引六表去陈旧 id、`scan()` null 防御、`luckyPoemId` 兜底改 null、`.bak` 迁出 site/、meta 去写死数字，见 §12；审查报告 `Review-20261101-第八轮.md`）
-> 状态：功能完整，`npm test` 392 项（快照 13 + 规则 90 + shell 一致性 94 + 状态逻辑 126 + 农历 19 + 简繁 50）全过，个人使用可上生产
+> 状态：功能完整，`npm test` 全过（项数以 `npm test` 实际输出为准，当前 408 项），个人使用可上生产
 > 通读本文档约 15 分钟；跑起来约 5 分钟
 > **版本号一律以文件实际值为准**（`site/sw.js` 的 `CACHE`、`site/index.html` 的 `style.css?v=`），本文不写具体数字，避免过期
 > 历史细节（每批改了什么、踩了什么坑的原始记录）在 `HANDOFF-历史存档-20261026.md`
@@ -13,8 +13,9 @@
 **背景**：曾出现 3 个工具 × 5–6 会话共用同一工作目录、各自 `npm run build`，导致本地数据被重建到 47 万、覆盖线上 214 万的事故。
 
 **铁律（所有会话、所有工具）**：
-1. **同一时刻只允许一个会话 build/deploy**。构建统一用 `bash etl/safe-build.sh`（自带 `ops/.build.lock`、备份、失败回滚），**禁止裸跑 `npm run build`**。
-2. **只改代码 → 一律 `--skip-build`**（`bash deploy-cf.sh --skip-build` + 仅代码清单同步 CloudBase），不要 build。
+1. **同一时刻只允许一个会话 build/deploy**。构建统一用 `bash etl/safe-build.sh`（原子锁 `ops/.build.lock.d`、备份、校验、失败回滚）；完整链路用 `bash etl/safe-build.sh --deploy-ready` + `bash deploy-cf.sh`。**`npm run build` 已指向 `safe-build.sh`；禁止 `build:raw` / `node etl/build.js`**。
+2. **只改代码 → 一律 `--skip-build`**（`bash deploy-cf.sh --skip-build`），不要 build。
+   **CloudBase 同步策略（统一规则）**：**只改代码不同步镜像**（体验版 3GB 已用约 2.62GB）；确实需要镜像时显式执行 cosfix 流程。
 3. **数据基线 = manifest.total 2,145,874（214 万 / 79 集合）**。低于此值视为事故，禁止发布。
 4. **开工先读**：`ops/state.json`（上次 build/deploy、备份路径）+ 本节，并跑 `node etl/preflight.mjs` 自检。
 5. **数据不进 git**；代码走 git 分支，由一个"主编"会话合并，避免多会话改同一工作树。
@@ -26,14 +27,15 @@
    - 判断标准：说不出「哪条数据错了、错在哪、为什么必须重建而不能定点改」就不要发起 build。
 
 **构建前自检**：`node etl/preflight.mjs`（源是否齐、build.js 是否 79 集合、基线、锁、磁盘）。
-**安全构建**：`bash etl/safe-build.sh`（备份 → build → 校验 total → 失败回滚）。
-**部署（如需）**：safe-build 后再 `npm run pack -- --go && npm run gz -- --go`，然后发布。
+**安全构建**：`bash etl/safe-build.sh`（原子锁 → 备份 → build → 校验 total / 79 集合 / 分块齐全 → 失败回滚）。
+**完整链路（数据也变了，须用户明确要求）**：`bash etl/safe-build.sh --deploy-ready`（build + pack + gz 在同一把锁与同一个回滚事务内）+ `bash deploy-cf.sh --skip-build`。
+**只改代码发布**：`bash deploy-cf.sh --skip-build`。
 
 **职责分工（2026-11-03 用户决定，强制）**：
 - **一个会话专门 build**，其它会话严禁 build；**一个会话专门上传**，其它会话不上传。
 - 不并行干活；细化定义为：不同时**写**（build / pack / gz / deploy / 改数据须独占），只读、分析、改代码分支可并行。
 - 所有工具须在**同一台机器、同一目录**（`ops/.build.lock` 才有效）；跨机器时只在一台机器上 build。
-- **崩溃恢复**：build 会话中断时 → `ops/.build.lock` 超过 120 分钟自动视为陈旧可清；`site/data.failed-*`、`_site-data-backups/data.bak-*` 可回滚；`site/data` 缺失时从 `_site-data-backups` 或远端（CloudBase）恢复。
+- **崩溃恢复**：build 会话中断时 → `ops/.build.lock.d/` 锁目录（内含 ts/pid/host）超过 120 分钟自动视为陈旧可清；`site/data.failed-*`、`_site-data-backups/data.bak-*` 可回滚；`site/data` 缺失时从 `_site-data-backups` 或远端（CloudBase）恢复。
 
 ---
 
@@ -62,8 +64,8 @@
 ```bash
 node server.js 3737            # 零依赖静态服务器（gzip + Range）
 # 打开 http://localhost:3737  手机同 WiFi 用 http://<电脑IP>:3737
-npm test                       # 392 项：pure 13 + rules 90 + shell 94 + state 126 + lunar 19 + zh 50（tests/ 六个文件）
-npm run build                  # 重建 site/data（约 3~7 分钟）—— 需要先恢复归档，见下
+npm test                       # 项数以 `npm test` 实际输出为准（当前 408 项；tests/ 六个文件）
+bash etl/safe-build.sh         # 重建 site/data（唯一入口；需要先恢复归档，见下）
 ```
 
 > **重建前先把中间产物移回来**（2026-10-27 整理时移走了 3.2GB）：
@@ -76,8 +78,8 @@ npm run build                  # 重建 site/data（约 3~7 分钟）—— 需�
 
 - **不能双击 `index.html`**：ES modules + fetch 会被 file:// 拦。
 - **部署**：整个 `site/` 目录可传 Cloudflare Pages / Vercel。注意单文件 ≤25MB、**每站 ≤20,000 文件**
-  （2026-11-03 已用 `etl/pack-deploy-20261103.mjs` 把 29,001 压到 14,000，发布前跑 `npm run pack -- --go`，
-  见 §12 同日条目）。
+  （2026-11-03 已用 `etl/pack-deploy-20261103.mjs` 把 29,001 压到 14,000；发布链路统一为
+  `bash etl/safe-build.sh --deploy-ready` + `bash deploy-cf.sh --skip-build`，见 §12 同日条目）。
 - **不要删 `.workbuddy/`**（项目记忆与自动化数据）。
 
 ## 3. 目录结构
@@ -1164,8 +1166,8 @@ CC BY-NC 4.0 / MPL-2.0 / **GPL-3.0** / **LGPL-3.0** / 未标注 / 站点自采�
 - **限流桶每小时清扫**（2026-10-29）：`ipBuckets` 每个 IP 一个桶、原先只增不减，公网暴露于
   扫描流量时 Map 缓慢膨胀；现在每小时删一次「小时窗已过期」的桶（过期桶下次访问也会整体
   重置，删掉与保留等价），定时器 `unref()` 不阻止进程退出。
-- **磁盘（2026-10-27 整理后）**：网站目录只剩 `site/` 523MB + `etl/` 52MB，其余 3.2GB 全在
-  `../poetry-site-archive-20261027/`（与网站同级、同一块盘）：
+- **磁盘（当前口径）**：`site/data/` 为 **2.7GB / 约 1.4 万文件**（`.json.gz` 形态，2026-11-03 起）；
+  历史归档的中间产物另放 `../poetry-site-archive-20261027/`（与网站同级、同一块盘）：
 
   | 归档目录 | 原位置 | 体积 |
   |---|---|---|
@@ -1307,7 +1309,7 @@ CC BY-NC 4.0 / MPL-2.0 / **GPL-3.0** / **LGPL-3.0** / 未标注 / 站点自采�
 
 ### 数据与构建
 
-1. `npm run build` → 看到 `BUILD_OK`，`manifest.total` 与 poems4 行数一致
+1. `bash etl/safe-build.sh` → 看到 `BUILD_OK`，`manifest.total` 与 poems4 行数一致
 2. `node etl/check-zhu.js` → 注释词条全部可定位
 3. `npm test` → 快照 13 项 + 规则 25 项全过（改了 layout 相关函数才需要 `--update` 重录快照）
 
@@ -1754,7 +1756,7 @@ tang 尾区（181104 之后 1,315 条）被整批挡在门外。三个 P0 一并
   span 圈窗口，块内先探测下标、失配再 `find(r => r.i === rid)`（与 getPoem 同口径）；
   旧行为标签页 61,907 条条目中 26,763 条（43.2%）显示成隔壁那首。`store.js` 顺带导出 `getDedupRemap`
 ③ **P0-3（派生索引指向已删 id）**：随 ② 的 remap 化自动修复（所有进入 loadRowsByIds 的 id 先重定向）
-④ 测试与验证：`npm test` 392 项全过（id 层原有零覆盖，本次逻辑改动不被现有测试拦截是已知事实）；
+④ 测试与验证：`npm test` 全过（项数以实际输出为准，当前 408 项）（id 层原有零覆盖，本次逻辑改动不被现有测试拦截是已知事实）；
   新增 dom-shim 实数据验证 18 项全过（span 总和=655462/无缝衔接、181105 前后邻居恢复、
   700 混合 id（含 300 空洞+尾区+重复）批量取数与 getPoem 逐条一致、181103→174960 remap、
   luckyPoemId 50 次全可读）；`etl/out` 与 `site/data` 未动，改动均有 `.bak-20261101` 备份
@@ -1813,7 +1815,7 @@ remap 27,959 键闭包扁平 0 链式——单步 remap 的安全前提首次验
    基线提交 `8e3f3ea`（13,201 文件：全部代码/脚本/HANDOFF/评审/小体积索引；`.gitignore` 排除
    poems/names/ft/authors 大分片、原始数据集、audit-out、备份目录）。**COLLECTIONS 补 24 集合 /
    `--preserve-ids` 仍未做**——`npm run build` 依然不可直接用于线上
-⑨ 验证：全库复扫 0 null/0 陈旧 id/0 死链；`npm test` 392 项全过；624 样本对账、luckyPoemId 200 次
+⑨ 验证：全库复扫 0 null/0 陈旧 id/0 死链；`npm test` 全过（项数以实际输出为准，当前 408 项）；624 样本对账、luckyPoemId 200 次
    复测全过。遗留：`COLLECTIONS` 补齐；第二批数据清洗未动
 
 **2026-11-01（pdb_songci 词牌标题规范 + pdb_* 集合登记，用户报告 #/p/585179）**：
@@ -1832,7 +1834,7 @@ remap 27,959 键闭包扁平 0 链式——单步 remap 的安全前提首次验
   359→**512 类**、覆盖 61.5 万篇（词·浣溪沙 1,925、词·鹧鸪天 1,584，此前 pdb_songci 全被
   算进"古体"）；`build-fast.mjs` 重跑
 ④ 验证：pdb_songci 复扫**残留 0/0/0**；585179 全链路 = 标题「行香子·回舟即事」→ 徽章
-  「词·行香子」→ citpl 同调平仄推定可用 → names 行已同步；`npm test` 392 项全过
+  「词·行香子」→ citpl 同调平仄推定可用 → names 行已同步；`npm test` 全过（项数以实际输出为准，当前 408 项）
 ⑤ **同类问题未修（超出本次口径，待点名）**：songci 胶着 1,105 / yq 180 / jssci 234 /
   pdb_song 2,321+323 / pdb_tang 74 / pdb_qing 18 等；全集系空格分隔（qingS 5,240 / jinyuan
   1,298 / mingS 850 / tang 256 等）属「 其N」全库约定（§5.6），不在词牌修正范围
@@ -1850,7 +1852,7 @@ remap 27,959 键闭包扁平 0 链式——单步 remap 的安全前提首次验
   pdb_tang）只修空格不修胶着——「南浦别」「虞美人草行」「大酺樂」这类词牌同名乐府诗题全部保住
 ④ 验证：第二轮 fix 0 改动（收敛）；抽查 tang#128649/pdb_tang#600429/song#243534（保护）、
   pdb_songci#565368（回滚）、pdb_song#498053/qingS#74458（修正）全对；names/ft/mingju/hot
-  同步、manifest.v bump、genre/fast 重建；npm test 392 项全过
+  同步、manifest.v bump、genre/fast 重建；npm test 全过（项数以实际输出为准，当前 408 项）
 ⑤ 已知遗留：yq 有 45 条源数据本身就以 ・ 开头的套数续篇题（非本次引入，未动）
 **2026-11-01（阅读队列 navCtx——用户提案「搜索结果就是一个临时集合」）**：
 搜索/标签/体裁/名句/作者页把有序 id 列表挂进队列（`store.js` 的 
@@ -1950,7 +1952,7 @@ siku/rhyme/citunes/shihua/mengxue_cht/jingbu_cht/tang300ext/pdb 新补遗等）�
   （kebenGrouped「其他」组会偏大）；couplets 详情页作者恒「佚名」（源数据如此）
 
 **2026-11-03（云托管发布瘦身：29,001 → 14,000 文件）**：
-起因：CloudBase 免费额度放不下。实测 `site/` 为 **29,001 文件 / 5.88GB**（§1/§8 里的 523MB 早已过期），
+起因：CloudBase 免费额度放不下。实测 `site/` 曾为 **29,001 文件 / 5.88GB**（§1/§8 里早期的体积值早已过期；当前 `site/data` 为 2.7GB / 约 1.4 万文件），
 同时撞 Cloudflare Pages 免费版两条硬限制：**每站 20,000 文件**、**单文件 25MiB**（`fh/人.json` 75.91MB、
 `idx/firstlines.json` 48.80MB、`fh/天.json` 28.54MB 三个超限）。EdgeOne 免费版（20,000 文件 + 5GB 总量）同样上不了。
 ① **jl 分桶**：17,547 个「每首字一个文件」里 9,148 个 <2KB、合计仅 3.9MB。现保留 **≥100KB 的 2,445 个**
@@ -1967,9 +1969,9 @@ siku/rhyme/citunes/shihua/mengxue_cht/jingbu_cht/tang300ext/pdb 新补遗等）�
 ⑤ 验证：桶内容与备份逐字一致（抽 6 字）；`fh 人` 5 片拼回 2,062,351 句与 `sizes.n` 一致；
   最大单文件 18.00MB；`npm test` **407 项**全过（纯 13 + 规则 90 + shell 97 + 状态 138 + 农历 19 + 简繁 50）；
   SW `v346→v347`
-⑥ **发布纪律**：只有数据真变了才走 `npm run build`（且 build 之后必须再跑
-   `npm run pack -- --go` 与 `npm run gz -- --go`，否则文件数/体积会涨回去）；
-   **纯代码改动跳过这三步，直接 wrangler deploy**
+⑥ **发布纪律**：只有数据真变了才走完整链路 `bash etl/safe-build.sh --deploy-ready`（build + pack + gz
+   在同一把锁与同一个回滚事务内，否则文件数/体积会涨回去）+ `bash deploy-cf.sh --skip-build`；
+   **纯代码改动直接 `bash deploy-cf.sh --skip-build`**
 ⑦ 遗留：`fh/人` 查验仍要下 75.9MB 全量（只把首屏从 75.9MB 降到 1.1MB）；firstlines 8 片共 25MB
   仍是后台全量加载；`jl` 冷僻首字首次多取一个 ~2MB 桶（之后走 IDB）
 
@@ -1991,11 +1993,11 @@ siku/rhyme/citunes/shihua/mengxue_cht/jingbu_cht/tang300ext/pdb 新补遗等）�
     `npm-cache/_npx/d77349f55c2be1c0/node_modules/wrangler/wrangler-dist/cli.js`，原文件备份为 `.orig`
   - 未压缩时 18MB 的 `fh` 分片与 12MB 的 `gwdj` 块会触发请求超时，压成 `.gz` 后消失
   - 增量发布已验证：只改 js 时 `Uploaded 2 files (14,003 already uploaded)`，几秒完成
-④ **发布链路（顺序不能乱）**：`npm run build` → `npm run pack -- --go` → `npm run gz -- --go` →
-   `npx wrangler pages deploy site --project-name shanchuang --branch main`
+④ **发布链路（顺序不能乱）**：`bash etl/safe-build.sh --deploy-ready` →
+   `bash deploy-cf.sh --skip-build`（等价于直接 `bash deploy-cf.sh`，其内部非 `--skip-build` 分支自动调用前一步）。
    - ⚠️ **没改数据就不要 build**（2026-11-04 定）：build/pack/gz 三步只服务于数据侧
      （etl/out → 分块/索引 → 分桶分片 → gzip），代码改动一行不碰；**纯代码改动直接
-     wrangler deploy**（按内容哈希增量上传，几秒完成）。且 build 当前本就不可跑
+     `bash deploy-cf.sh --skip-build`**（按内容哈希增量上传，几秒完成）。且 build 当前本就不可跑
      （COLLECTIONS 未补 27 集合，跑了丢 20,966 首并重排 id）
 ⑤ **Cloudflare Pages 的 SPA 回退是隐形陷阱**：不存在的路径会返回 **`index.html` + 200**
   （`/_dbg`、`/data/idx/nope.json` 都这样）。后果是「数据文件缺失」变成「拿到一坨 HTML」，

@@ -35,8 +35,8 @@
   --card-soft:  color-mix(in srgb, var(--card-solid) var(--t-soft),  transparent);
   --card-body:  color-mix(in srgb, var(--card-solid) var(--t-body),  transparent);
   --ink: #3b3229;
-  --ink-2: #7a6f60;
-  --ink-3: #84745f;
+  --ink-2: #6b5f50;   /* v192: 原 #7a6f60 对纸底仅约 4.3:1，提到 AA 4.5:1 以上 */
+  --ink-3: #706354;   /* v192: 原 #84745f 约 3.9:1，提到 AA 4.5:1 以上 */
   --line: #e7ddc9;
   --accent: #a3372f;
   --accent-soft: #f3e2d9;
@@ -59,6 +59,7 @@ html[data-kai="0"] { --kai: "Kaiti SC", "STKaiti", "KaiTi", serif; }
   --ink-3: #948875;
   --line: #332c22;
   --accent: #c25b4e;
+  --on-accent: #000000;   /* v192: 深色强调色偏亮，白字仅 4.29:1；深墨字 4.90:1 达 WCAG AA */
   --accent-soft: #33241f;
   --gold: #caa24a;
   --app-line: rgba(51, 44, 34, 0.55);
@@ -167,7 +168,6 @@ a { color: inherit; text-decoration: none; }
 .topbar .back { font-size: 1.5rem; line-height: 1; padding: 2px 8px 6px; color: var(--ink-2); }
 .topbar h1 { flex: 1; font-size: 1.12rem; margin: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .topbar .act { font-size: 0.85rem; color: var(--ink-2); padding: 4px 6px; white-space: nowrap; }
-.topbar .act.on { color: var(--accent); }
 
 /* 搜索框 */
 .searchbar {
@@ -469,7 +469,6 @@ ruby rt { font-size: 0.5em; color: var(--ink-3); font-family: sans-serif; letter
 .src-url a { color: var(--accent); text-decoration: none; }
 .src-url a:hover { text-decoration: underline; }
 .src-note { font-size: 0.86rem; line-height: 1.7; color: var(--ink-2, #555); overflow-wrap: anywhere; word-break: break-all; }
-@media (prefers-color-scheme: dark) { .src-note { color: var(--ink-2, #bbb); } }
 
 /* 作者 */
 .author-head { display: flex; align-items: center; gap: 14px; }
@@ -613,7 +612,16 @@ a.stat:active { border-color: var(--accent); }
 }
 
 /* 折叠卡片（默认收起） */
-.card[data-fold] h2.fold-head { cursor: pointer; }
+/* v192: 折叠头改为 <button class="fold-head">，补回原 h2 的 flex/字号/朱色竖条 */
+.card[data-fold] .fold-head {
+  display: flex; align-items: center; gap: 6px; width: 100%;
+  margin: 0 0 10px; padding: 0; text-align: left;
+  font-size: 0.82rem; font-weight: 600; letter-spacing: 2px;
+  color: var(--ink-2); cursor: pointer;
+}
+.card[data-fold] .fold-head::before {
+  content: ""; width: 3px; height: 12px; background: var(--accent); border-radius: 2px; flex: none;
+}
 .card[data-fold] .fold-btn {
   margin-left: auto; color: var(--ink-3); font-size: 1rem; font-weight: 400;
   width: 22px; height: 22px; display: flex; align-items: center; justify-content: center;
@@ -920,7 +928,7 @@ a.stat:active { border-color: var(--accent); }
 
 /* 无障碍：键盘焦点样式 */
 button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
-.searchbar input:focus-visible { outline: none; }
+.searchbar:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* 「已读」印章：读完那一刻盖上，竖排两字、微微歪，像打过的戳 */
 .rd-seal {
@@ -1031,3 +1039,5 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
 }
 .fh-input input:focus { border-color: var(--accent); }
 .fh-input .lucky { flex: none; }
+
+/* v192: 第十一轮可访问性与对比度修复 */

@@ -66,8 +66,8 @@ eq('杂言归古体', guessGuTi({ p: ['君不見黃河之水天上來，奔流�
   const reg = detectRegulated(po, TABLE);
   const st = reg ? buildPingze(po, TABLE, reg) : buildToneOnly(po, TABLE);
   const joined = st.join('');
-  eq('平仄长度=汉字数', [...joined.replace(/[^\u3400-\u9fff]/g, '')].length >= 0, true);
-  eq('平仄只含平仄中与标点', /^[平仄中标点]*$/.test(joined.replace(/[，。！？；、：\s]/g, '')) || st.length > 0, true);
+  eq('平仄长度=汉字数', [...joined.replace(/[^\u3400-\u9fff]/g, '')].length, [...txt.replace(/[^\u3400-\u9fff]/g, '')].length);
+  eq('平仄只含平仄中与标点', /^[平仄中标点]*$/.test(joined.replace(/[，。！？；、：\s]/g, '')), true);
 }
 
 // ---------- ciSegments：行宽自适应 ----------

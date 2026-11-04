@@ -5,6 +5,7 @@
 // 也要多一跳串行模块发现。把「加视图忘同步清单」变成 npm test 能当场抓住的断言。
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { SITE } from './dom-shim.mjs';
 
 let pass = 0, fail = 0;
@@ -57,6 +58,66 @@ for (const m of ['js/app.js', 'js/store.js', 'js/views.js', 'js/vcommon.js', 'js
   ok('CSS 引用子集路径正确（相对 css/ 目录）', css.includes('url("../fonts/lxgw-wenkai-sub.woff2")'), '路径对不上');
   ok('楷体走 CSS 变量（一处开关管全站）', /--kai:\s*"LXGW WenKai"/.test(css), '--kai 没定义');
   ok('关掉开关时不请求字体', /\[data-kai="0"\]\s*\{\s*--kai:[^}]*\}/.test(css), '缺少 data-kai=0 覆盖');
+}
+
+// ⑥ 第十一轮 F-4 / E-6：SHELL 补齐、CSP 三处一致、内联脚本 hash、版本号同步
+{
+  // 6a vendor/pako.esm.mjs 必须在 SHELL（老浏览器解压 gzip 全靠它，离线不能等用到才拉）
+  ok('SHELL 含 vendor/pako.esm.mjs', shell.includes('vendor/pako.esm.mjs'), 'SHELL 缺 vendor/pako.esm.mjs');
+
+  // 6b render-guard.js 进 SHELL，且 index.html 有对应 modulepreload
+  ok('SHELL 含 js/render-guard.js', shell.includes('js/render-guard.js'), 'SHELL 缺 js/render-guard.js');
+  const rgPreload = [...html.matchAll(/<link\b[^>]*>/g)].some(t =>
+    /rel="modulepreload"/.test(t[0]) && /href="[^"]*js\/render-guard\.js/.test(t[0]));
+  ok('index.html 有 js/render-guard.js 的 modulepreload', rgPreload, 'modulepreload 缺 js/render-guard.js');
+
+  // 6c 三处 CSP 字符串完全一致（_headers / server.js / index.html 的 meta content）
+  const srv = fs.readFileSync(path.join(SITE, '..', 'server.js'), 'utf8');
+  const hdr = fs.readFileSync(path.join(SITE, '_headers'), 'utf8');
+  const cspHtml = (html.match(/http-equiv="Content-Security-Policy"\s+content="([^"]*)"/) || [])[1] || '';
+  const cspSrv = (srv.match(/const\s+CSP\s*=\s*"([^"]*)"/) || [])[1] || '';
+  const hdrLine = hdr.split(/\r?\n/).find(l => l.trim().startsWith('Content-Security-Policy:')) || '';
+  const cspHdr = hdrLine.slice(hdrLine.indexOf(':') + 1).trim();
+  ok('index.html 能提取 CSP', !!cspHtml, '未匹配到 http-equiv=Content-Security-Policy 的 content');
+  ok('server.js 能提取 CSP', !!cspSrv, '未匹配到 const CSP = "..."');
+  ok('_headers 能提取 CSP', !!cspHdr, '未匹配到 Content-Security-Policy: 行');
+  ok('三处 CSP 字符串完全一致', !!cspHtml && cspHtml === cspSrv && cspSrv === cspHdr,
+    `html=${JSON.stringify(cspHtml)}\n    srv=${JSON.stringify(cspSrv)}\n    hdr=${JSON.stringify(cspHdr)}`);
+
+  // 6d 唯一内联 <script> 的 sha256 必须等于 CSP 里放行的 'sha256-...'
+  const inline = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
+  ok('index.html 只有 1 个内联 <script>', inline.length === 1, inline.length + ' 个');
+  const inlineHash = inline.length
+    ? 'sha256-' + crypto.createHash('sha256').update(inline[0], 'utf8').digest('base64') : '(无内联脚本)';
+  const cspHash = (cspHtml.match(/sha256-[A-Za-z0-9+/=]+/) || [])[0] || '';
+  ok('CSP 含 sha256 放行令牌', !!cspHash, 'CSP 里没有 sha256-... : ' + JSON.stringify(cspHtml));
+  ok('内联脚本 sha256 == CSP 的 sha256-...', inlineHash === cspHash,
+    `内联=${inlineHash} CSP=${cspHash || '(缺)'}`);
+  ok('三处 CSP 共用同一 sha256 令牌', !!cspHash && cspSrv.includes(cspHash) && cspHdr.includes(cspHash),
+    `令牌=${cspHash || '(缺)'} server=${cspSrv.includes(cspHash)} _headers=${cspHdr.includes(cspHash)}`);
+
+  // 6e 版本号同步：SW 的 CACHE 与 index.html 的 style.css?v= 必须一起 bump（宽松：只验同时存在）
+  const cache353 = /CACHE\s*=\s*['"]shici-shell-v353['"]/.test(sw);
+  const css192 = /style\.css\?v=192(?!\d)/.test(html);
+  ok('sw.js CACHE 已 bump 到 shici-shell-v353', cache353,
+    (sw.match(/const\s+CACHE\s*=\s*['"][^'"]+['"]/) || ['未找到 CACHE'])[0]);
+  ok('index.html style.css?v=192 已 bump', css192,
+    (html.match(/style\.css\?v=\d+/) || ['未找到 style.css?v='])[0]);
+  ok('版本号一致性：v353 与 ?v=192 同时存在', cache353 && css192,
+    `CACHE(v353)=${cache353} style.css?v=192=${css192}`);
+
+  // 6f 首访预算（第十一轮 F-2）：关键路径不能无限膨胀。
+  const storeSrc = fs.readFileSync(path.join(SITE, 'js', 'store.js'), 'utf8');
+  const preloadCount = [...html.matchAll(/rel="modulepreload"/g)].length;
+  ok('modulepreload 不超过 36 个', preloadCount <= 36, preloadCount + ' 个');
+  ok('getManifest 用条件请求（不再用 ?_= 禁用 HTTP 缓存）',
+    /fetchWithTimeout\('data\/manifest\.json',\s*\{\s*cache:\s*'no-cache'\s*\}/.test(storeSrc),
+    'manifest 请求未使用 cache:no-cache');
+  const manifestPath = path.join(SITE, 'data', 'manifest.json');
+  if (fs.existsSync(manifestPath)) {
+    const kb = fs.statSync(manifestPath).size / 1024;
+    ok('manifest.json 不超过 256KB', kb <= 256, kb.toFixed(1) + ' KB');
+  }
 }
 
 console.log(fail ? `✗ shell 一致性 ${fail}/${pass + fail} 失败` : `✓ shell 一致性 ${pass} 项全过`);

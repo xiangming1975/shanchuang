@@ -2,10 +2,10 @@
 // 内容取自《数据来源说明》（C:/Users/xiang/Downloads/数据来源说明.md）：
 // 从 53 个采集来源中挑出主库实际使用的部分，逐条列出「数据集名称 / 网址 / 版权 / 内容备注」。
 // 主库数据由 dataset_dedup（去重库）并入，未纳入的英文译文、评测基准、0 条入库等来源单独说明。
-import { app } from '../vcommon.js';
+import { app, PAD } from '../vcommon.js';
+import { setAppHTML, isCurrent, currentRenderSeq } from '../render-guard.js';
 import { esc } from '../py.js';
 
-const PAD = '<div class="page-pad"></div>';
 
 // 主库实际使用的来源（经导入/注释/体裁/新诗各线核对）。
 // 字段：name 数据集名称；links 网址（[href, 文本]）；lic 版权；note 内容备注。
@@ -198,7 +198,7 @@ function renderItem(it) {
   </div>`;
 }
 
-async function sourcesView() {
+async function sourcesView(seg, seq = currentRenderSeq()) {
   let total = 0;
   const groups = GROUPS.map(g => {
     total += g.items.length;
@@ -245,7 +245,7 @@ async function sourcesView() {
     </div>
   </div>`;
 
-  app.innerHTML = `${PAD}
+  setAppHTML(seq, `${PAD}
     <div class="card">
       <h2>数据来源</h2>
       <div class="annotate tight">
@@ -256,7 +256,7 @@ async function sourcesView() {
     ${licenseBlock}
     ${groups}
     ${tools}
-    ${notes}`;
+    ${notes}`);
 
   try { document.title = '数据来源 · 山窗 · 千年古诗文'; } catch {}
 }

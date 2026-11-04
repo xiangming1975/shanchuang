@@ -17,7 +17,13 @@ export function ensurePinyinLib() {
     pyLibPromise = new Promise((resolve) => {
       const s = document.createElement('script');
       s.src = 'vendor/pinyin-pro.min.js';
-      s.onload = () => resolve(hasPinyinLib());
+      s.onload = () => {
+        const ok = hasPinyinLib();
+        // 第十一轮 P3：脚本 200 但库没挂上（内容损坏 / 旧 SW 把 HTML 缓存到该 URL）
+        // 时，不能让 resolved(false) 固化整会话。清掉 promise 允许下次重试。
+        if (!ok) pyLibPromise = null;
+        resolve(ok);
+      };
       s.onerror = () => { pyLibPromise = null; resolve(false); };
       document.head.appendChild(s);
     });

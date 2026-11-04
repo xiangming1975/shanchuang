@@ -8,6 +8,9 @@ let canvas = null;
 let observer = null;
 let resizeTimer = 0;
 let lastSeed = 0;
+let onResize = null;            // 供 disposeInkBackground 解绑
+let resizeDebounce = 0;
+const mediaBindings = [];      // { mq, handler, legacy }，供 disposeInkBackground 解绑
 let paintW = 0, paintH = 0;   // 位图实际尺寸（resize 时与视口比较，决定要不要重画）
 
 // 种子随机（mulberry32）：同一种子出同一幅画，便于调试复现
@@ -1163,9 +1166,16 @@ export function paintInkScene(g, W, H, seed, opt) {
   // 5c. 近景枝：竹 / 梅 / 松，贴边斜出。放在雨雪之后，才在它们「前面」
   foregroundBranch(g, W, H, rnd, M, fgSide);
 
-  // 6. 纸纹颗粒（1500 点，实测 ~15ms，观感几乎无差）
-  grain(g, W, H, rnd, M.grain, 1500);
+  // 6. 纸纹颗粒：按设备内存/核心数由 1500 下调到 300，低端再减半（第十一轮性能）
+  grain(g, W, H, rnd, M.grain, grainBudget());
   g.globalAlpha = prevAlpha;
+}
+
+function grainBudget() {
+  const nav = typeof navigator !== 'undefined' ? navigator : {};
+  const mem = nav.deviceMemory || 4;        // Chrome 提供（GB），其余浏览器为 undefined
+  const cores = nav.hardwareConcurrency || 4;
+  return (mem <= 2 || cores <= 2) ? 150 : 300;
 }
 
 function paint(seed) {
@@ -1224,10 +1234,9 @@ export function initInkBackground() {
   // 调试：?inkseed=0 固定一幅构图（默认每次随机）。深色下 seed 0/6-10 落在「清远」，会挂月。
   const q = new URLSearchParams(location.search).get('inkseed');
   repaintInk(q != null && q !== '' ? +q : undefined);
-  let timer = 0;
-  window.addEventListener('resize', () => {
-    clearTimeout(timer);
-    timer = setTimeout(() => {
+  onResize = () => {
+    clearTimeout(resizeDebounce);
+    resizeDebounce = setTimeout(() => {
       // 小幅变化（地址栏伸缩、软键盘）什么都不做：#ink-bg 是 width/height 100%，
       // 浏览器自动拉伸既有位图，远景轻微形变无感。旋转（长宽比翻转）或大幅
       // 变化才按新尺寸重画，桌面拖窗不再连绘。
@@ -1235,25 +1244,43 @@ export function initInkBackground() {
       const flipped = (W / H > 1) !== (paintW / paintH > 1);
       if (!paintW || flipped || Math.abs(W - paintW) > 160 || Math.abs(H - paintH) > 200) repaintInk(lastSeed);
     }, 260);
-  }, { passive: true });
+  };
+  window.addEventListener('resize', onResize, { passive: true });
   // 主题切换（applyTheme 改的是 html[data-theme]）
   if (window.MutationObserver && !observer) {
     observer = new MutationObserver(() => {
       clearTimeout(resizeTimer);
       resizeTimer = setTimeout(() => repaintInk(lastSeed), 60);
     });
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'class', 'data-ink'] });
+    // attributeFilter 去掉 class：只关心主题/水墨屏属性，class 变动不再触发重绘
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'data-ink'] });
   }
-  // 系统主题变化（跟随系统时）
+  // 系统主题变化（跟随系统时）：记录绑定，供 disposeInkBackground 解绑
   if (window.matchMedia) {
-    const mq = matchMedia('(prefers-color-scheme: dark)');
-    if (mq.addEventListener) mq.addEventListener('change', () => repaintInk(lastSeed));
+    const bind = (query) => {
+      const mq = matchMedia(query);
+      const handler = () => repaintInk(lastSeed);
+      if (mq.addEventListener) { mq.addEventListener('change', handler); mediaBindings.push({ mq, handler }); }
+      else if (mq.addListener) { mq.addListener(handler); mediaBindings.push({ mq, handler, legacy: true }); }
+    };
+    bind('(prefers-color-scheme: dark)');
     // 无障碍偏好变化：开启→隐藏画布，关闭→补画
-    for (const q of ['(prefers-reduced-motion: reduce)', '(prefers-reduced-transparency: reduce)']) {
-      const m2 = matchMedia(q);
-      if (m2.addEventListener) m2.addEventListener('change', () => repaintInk(lastSeed));
-    }
+    bind('(prefers-reduced-motion: reduce)');
+    bind('(prefers-reduced-transparency: reduce)');
   }
+}
+
+// 释放背景监听：移除 resize/matchMedia 监听并断开 observer（第十一轮性能）
+export function disposeInkBackground() {
+  if (onResize) { window.removeEventListener('resize', onResize); onResize = null; }
+  clearTimeout(resizeDebounce);
+  clearTimeout(resizeTimer);
+  for (const b of mediaBindings) {
+    if (b.legacy) { if (b.mq.removeListener) b.mq.removeListener(b.handler); }
+    else if (b.mq.removeEventListener) b.mq.removeEventListener('change', b.handler);
+  }
+  mediaBindings.length = 0;
+  if (observer) { observer.disconnect(); observer = null; }
 }
 
 // 设置页开关用

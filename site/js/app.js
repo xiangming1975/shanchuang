@@ -5,6 +5,7 @@ import { initInkBackground } from './inkbg.js';
 import { setZhMode, loadZhConv, loadCharMap } from './fn.js';
 import { installZhUi } from './uizh.js';
 import { esc } from './py.js';
+import { nextRenderSeq, isCurrent, setAppHTML } from './render-guard.js';
 
 const app = document.getElementById('app');
 const tabbar = document.getElementById('tabbar');
@@ -45,25 +46,27 @@ const routes = {
 };
 
 // 随机一首（R6）：PWA 桌面捷径「随便看看」直达用；抽中后跳详情页
-async function randomView() {
-  app.innerHTML = '<div class="loading dv-loading"></div>';
+async function randomView(_seg, seq) {
+  setAppHTML(seq, '<div class="loading dv-loading"></div>');
   const id = await luckyPoemId().catch(() => null);
+  if (!isCurrent(seq)) return;   // 第十一轮 A-3：抽签期间已切页，别覆盖新页
   if (id != null) {
     location.hash = '#/p/' + id;
   } else {
-    app.innerHTML = '<div class="empty-state"><div class="big">误</div>没抽到作品，请稍后再试<br><a href="#/" style="color:var(--accent)">回首页</a></div>';
+    setAppHTML(seq, '<div class="empty-state"><div class="big">误</div>没抽到作品，请稍后再试<br><a href="#/" style="color:var(--accent)">回首页</a></div>');
   }
 }
 routes['random'] = randomView;
 
-let renderSeq = 0;
 async function render() {
-  const seq = ++renderSeq;
+  const seq = nextRenderSeq();
   stopRead();
   const hash = location.hash.replace(/^#\/?/, '');
   const seg = hash.split('/').filter(s => s !== '');
   const key = seg[0] || '';
-  const fn = routes[key];
+  // 第十一轮 D-5：普通对象直接索引会命中 Object.prototype（#/__proto__ 把
+  // "fn is not a function" 甩给用户），改为自有属性判定。
+  const fn = Object.prototype.hasOwnProperty.call(routes, key) ? routes[key] : null;
   // tab 高亮
   const tabMap = { '': 'home', 'cat': 'home', 'c': 'home', 's': 'search', 't': 'home', 'tags': 'home', 'd': 'home', 'dy': 'home', 'm': 'home', 'g': 'home', 'fav': 'fav', 'recite': 'recite', 'excerpts': 'fav', 'settings': 'settings', 'data': 'settings', 'src': '', 'h': '', 'n': 'settings', 'p': '', 'a': '', 'j': '', 'hb': '', 'fh': '', 'bz': '', 'jl': '' };
   const tab = tabMap[key] ?? key;
@@ -74,33 +77,35 @@ async function render() {
     if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
   }
   if (!fn) {   // 不存在的路由：《...》别把 "fn is not a function" 甩给用户
-    app.innerHTML = '<div class="empty-state"><div class="big">误</div>没有这个页面<br><a href="#/" style="color:var(--accent)">回首页</a></div>';
+    setAppHTML(seq, '<div class="empty-state"><div class="big">误</div>没有这个页面<br><a href="#/" style="color:var(--accent)">回首页</a></div>');
     return;
   }
   try {
-    await fn(seg.slice(1));
+    // 序号作为第二参数传给视图；视图内部每个 await 后都必须校验，见 render-guard.js
+    await fn(seg.slice(1), seq);
   } catch (e) {
     console.error(e);
-    if (seq === renderSeq) {
+    if (isCurrent(seq)) {
       const msgStr = String((e && e.message) || e);
       // 离线（首访未完成初始化、或断网后进未缓存页）给友好态 + 自动重试，
       // 不再甩「manifest 加载失败」这类报错文案（评审 N8）
-      const offline = !navigator.onLine || /manifest 加载失败|Failed to fetch|NetworkError|load failed/i.test(msgStr);
+      const offline = !navigator.onLine || /manifest 加载失败|Failed to fetch|NetworkError|load failed|数据加载失败|timeout|abort/i.test(msgStr);
       if (offline) {
-        app.innerHTML = '<div class="empty-state"><div class="big">离</div>当前离线，联网后 30 秒内自动重试<br>' +
-          '<span class="section-tip">首次使用需联网完成初始化；已看过的内容离线也能读</span></div>';
-        setTimeout(() => { if (seq === renderSeq && !navigator.onLine) render(); }, 30000);
+        setAppHTML(seq, '<div class="empty-state"><div class="big">离</div>当前离线，联网后会自动重试<br>' +
+          '<span class="section-tip">首次使用需联网完成初始化；已看过的内容离线也能读</span></div>');
+        // 第十一轮 C-4：原条件 !navigator.onLine 写反（联网后反而不重试），且无 online 监听。
+        setTimeout(() => { if (isCurrent(seq)) render(); }, 30000);
       } else {
         // 异常消息可能夹带数据文件名等，插 innerHTML 前过 esc（第十轮 🟡-5）
-        app.innerHTML = `<div class="empty-state"><div class="big">误</div>页面加载出错：${esc(msgStr)}</div>`;
+        setAppHTML(seq, `<div class="empty-state"><div class="big">误</div>页面加载出错：${esc(msgStr)}</div>`);
       }
     }
   }
-  if (seq !== renderSeq) return;
+  if (!isCurrent(seq)) return;
   // 视图白屏兜底：异步失败时宁可让用户看到"重试"，也不要留一块空白纸
   if (!app.innerHTML.trim()) {
-    app.innerHTML = '<div class="empty-state"><div class="big">误</div>这一页没加载出来<br>' +
-      '<button class="set-toggle" id="boot-retry" style="color:var(--accent)">点这里重新加载</button></div>';
+    setAppHTML(seq, '<div class="empty-state"><div class="big">误</div>这一页没加载出来<br>' +
+      '<button class="set-toggle" id="boot-retry" style="color:var(--accent)">点这里重新加载</button></div>');
     const retry = document.getElementById('boot-retry');
     if (retry) retry.onclick = () => location.reload();
   }
@@ -109,6 +114,7 @@ async function render() {
 }
 
 window.addEventListener('hashchange', render);
+window.addEventListener('online', () => render());   // 第十一轮 C-4：联网立刻重渲染，不等 30 秒
 
 // 启动
 applyTheme();
@@ -124,22 +130,33 @@ if (window.matchMedia) {
   const mqDark = matchMedia('(prefers-color-scheme: dark)');
   if (mqDark.addEventListener) mqDark.addEventListener('change', () => { if (!pref('theme')) applyTheme(); });
 }
-const fsSaved = parseInt(pref('fs') || '17');
-document.documentElement.style.setProperty('--fs', fsSaved + 'px');
+const fsSaved = parseInt(pref('fs') || '17', 10);
+// 第十一轮 P3：导入备份的坏值会变成 NaN → --fs: NaNpx，先把范围兜住
+const fsPx = Number.isFinite(fsSaved) && fsSaved >= 10 && fsSaved <= 40 ? fsSaved : 17;
+document.documentElement.style.setProperty('--fs', fsPx + 'px');
 tabbar.classList.remove('hidden');
 initInkBackground();     // 实时水墨背景（纯 canvas，绘制一次；resize / 切主题时重绘）
 // 简繁显示（2026-10-29）：默认繁體。先设模式、载齐映射再首渲染，
 // 避免第一帧闪原生繁简混排；映射加载失败（离线首访）则原样显示，不阻塞启动。
 setZhMode(pref('zh'));
-getManifest().catch(() => {}).finally(() => {
+// 第十一轮 A-2：首渲染原挂在裸 `getManifest().finally()` 上，manifest 永久 pending
+// 时首屏会一直停在「载入中…」。改为「启动依赖 vs 硬超时」赛跑，超时也放行 render。
+const BOOT_TIMEOUT_MS = 8000;
+const bootReady = Promise.all([
+  getManifest().catch(() => null),
+  loadCharMap().catch(() => {}),
+  loadZhConv().catch(() => {}),
+]);
+Promise.race([
+  bootReady,
+  new Promise(res => setTimeout(res, BOOT_TIMEOUT_MS)),
+]).then(() => {
   migrateDedupRemap();   // 去重后：用户数据旧 i → 保留正文 i（一次性，按 remap.v 幂等）
   preloadSearch();
-  Promise.all([loadCharMap().catch(() => {}), loadZhConv().catch(() => {})]).then(() => {
-    // 界面框架文字（按钮/标题/提示/tabbar）的简繁跟随：装好再首渲染，
-    // 首屏和之后每次视图落屏都会被观察器统一转换；正文等内容层幂等跳过。
-    installZhUi();
-    render();
-  });
+  // 界面框架文字（按钮/标题/提示/tabbar）的简繁跟随：装好再首渲染，
+  // 首屏和之后每次视图落屏都会被观察器统一转换；正文等内容层幂等跳过。
+  try { installZhUi(); } catch (e) { console.warn('[boot] installZhUi', e); }
+  render();
 });
 
 // Service Worker

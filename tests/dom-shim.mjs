@@ -63,12 +63,53 @@ globalThis.sessionStorage = globalThis.sessionStorage || {
   clear() { this._m.clear(); },
 };
 
+// E-6 测试故障注入开关（默认 'ok' = 完全保持原行为，现有 408 项不受影响）。
+// 测试里 `setFetchMode('gz404')` 切换，用完 `setFetchMode('ok')` 复位。
+//   gz404   : 只对 .gz 请求回 404，逼 store.js 走「未压缩原文」回退
+//   html200 : 任何请求都回 200 + text/html（模拟 Cloudflare SPA 回退吐首页 HTML）
+//   badgz   : 只对 .gz 请求回 200 + application/gzip 但正文是坏 gzip，逼解压失败回退
+//   nodb    : fetch 与 ok 一致；故障由测试自行 `delete globalThis.indexedDB` 注入
+const FETCH_MODES = new Set(['ok', 'gz404', 'html200', 'badgz', 'nodb']);
+let fetchMode = 'ok';
+export function setFetchMode(mode) {
+  if (!FETCH_MODES.has(mode)) throw new Error('未知 fetch mode: ' + mode);
+  fetchMode = mode;
+  return fetchMode;
+}
+
 // 把 fetch 指到 site/ 目录（数据索引在测试里要真读）
 // 数据目录线上是 .json.gz（2026-11-03 起），垫片跟着认：请求 X 时若只有 X.gz 存在，
 // 就回原样 gz 字节（含 content-type）+ 解压后的文本，让 cachedText 走真实的解压分支。
 globalThis.fetch = async (url) => {
   const rel = String(url).split('?')[0].replace(/^\.?\//, '');
   const file = path.join(SITE, rel);
+  // 故障注入：'ok'（默认）与 'nodb' 时下面整段不生效，成功路径逐字保持原样。
+  if (fetchMode === 'gz404' && /\.gz$/i.test(rel)) {
+    return {
+      ok: false, status: 404,
+      headers: { get: () => 'text/plain' },
+      arrayBuffer: async () => new ArrayBuffer(0),
+      text: async () => '', json: async () => ({}),
+    };
+  }
+  if (fetchMode === 'html200') {
+    const body = '<!doctype html><html><head></head><body>spa-fallback</body></html>';
+    return {
+      ok: true, status: 200,
+      headers: { get: (k) => (String(k).toLowerCase() === 'content-type' ? 'text/html; charset=utf-8' : null) },
+      arrayBuffer: async () => Buffer.from(body, 'utf8'),
+      text: async () => body, json: async () => ({}),
+    };
+  }
+  if (fetchMode === 'badgz' && /\.gz$/i.test(rel)) {
+    const bad = Buffer.from('not-a-valid-gzip-stream', 'utf8');
+    return {
+      ok: true, status: 200,
+      headers: { get: (k) => (String(k).toLowerCase() === 'content-type' ? 'application/gzip' : null) },
+      arrayBuffer: async () => bad,
+      text: async () => bad.toString('utf8'), json: async () => ({}),
+    };
+  }
   let raw = null, isGz = false;
   try { raw = fs.readFileSync(file); }
   catch { try { raw = fs.readFileSync(file + '.gz'); isGz = true; } catch { raw = null; } }

@@ -19,7 +19,8 @@
 //   「我寄愁心与明月」这类只见于《全唐诗》的句子永远查不到（用户实测反馈）。
 // 简繁：句库存原文写法（繁简并存），输入经 queryVariants 补出另一写法，
 //   双方去句尾标点后按 fhVerifyHit 从宽比对（整句相等 / 半句 / 两句连背都算中）。
-import { app, topbar, emptyHtml, popupMsg, fhBare, fhVerifyHit, starsFor, cnNum } from '../vcommon.js';
+import { app, topbar, emptyHtml, popupMsg, fhBare, fhVerifyHit, starsFor, cnNum, sleep } from '../vcommon.js';
+import { setAppHTML, isCurrent, currentRenderSeq } from '../render-guard.js';
 import { pref, cachedText, getPoem } from '../store.js';
 import { esc } from '../py.js';
 import { zhShow, queryVariants } from '../fn.js';
@@ -36,7 +37,6 @@ const FH_QUIPS = [
   '容我缓缓……压力陡增', '山窗额头见汗了', '这口气接得我心惊肉跳',
   '再接下去，我怕是要输了', '不好，山窗快顶不住了', '眼看要败，容我挣扎一番'
 ];
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 // 令字 → Promise<[[句, id], ...]>，同一令字整页会话只取一次
 // 发布瘦身（2026-11-03）：<令字>.json 曾单文件 75.9MB（超托管方 25MiB 上限），现拆成
@@ -46,6 +46,7 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 // 查验仍扫全量，判定口径与拆分前完全一致；seed 只影响随机出句的取样池。
 const fhCache = new Map();
 let fhIdx = null;
+let warmTimer = null;   // 预热 setTimeout 的 id（换令 / 视图卸载时 clearTimeout，v192）
 async function getFhIndex() {
   if (!fhIdx) fhIdx = JSON.parse(await cachedText('data/idx/fh/index.json?r=' + FH_R));
   return fhIdx;
@@ -101,16 +102,18 @@ async function verifyMove(input, ch) {
   return hit ? { s: input, id: hit[1] } : null;
 }
 
-async function feihuaView() {
-  app.innerHTML = topbar('飞花令', { back: true }) + '<div class="loading"></div>';
+async function feihuaView(seg, seq = currentRenderSeq()) {
+  if (warmTimer) { clearTimeout(warmTimer); warmTimer = null; }   // 重新进入视图：撤掉上一次的预热
+  setAppHTML(seq, topbar('飞花令', { back: true }) + '<div class="loading"></div>');
   let ch = FEI_CHARS[Math.floor(Math.random() * FEI_CHARS.length)];
   const warm = await loadFhSeed(ch);   // 只等样本（约 1MB），全量分片留给后台
+  if (!isCurrent(seq)) return;
   if (!warm) {
-    app.innerHTML = topbar('飞花令', { back: true }) + emptyHtml('令', '句库未就绪<br>请刷新重试');
+    setAppHTML(seq, topbar('飞花令', { back: true }) + emptyHtml('令', '句库未就绪<br>请刷新重试'));
     return;
   }
   // 应令要扫全量（与拆分前同一口径）：页面一出来就在后台预热，等你打出第一句时多半已就位
-  setTimeout(() => { loadFhAll(ch).catch(() => {}); }, 1200);
+  warmTimer = setTimeout(() => { warmTimer = null; if (isCurrent(seq)) loadFhAll(ch).catch(() => {}); }, 1200);
 
   let my = 0, ai = 0;
   let over = false;
@@ -134,7 +137,7 @@ async function feihuaView() {
   // 一局终了：真接过句（my ≥ 1）才算局——只点开看看、随手换令不算
   const closeRound = () => { if (my >= 1) { rounds++; pref('fhrounds', String(rounds)); } };
 
-  app.innerHTML = topbar('飞花令', { back: true }) + `
+  setAppHTML(seq, topbar('飞花令', { back: true }) + `
     <div class="card">
       <h2>飞花令</h2>
       <div class="section-tip" style="margin:4px 0 0">「春城无处不飞花」——韩翃《寒食》，唐人酒令「飞花」自此得名。定一字为令，句句须含令字，山窗与你轮流出句。</div>
@@ -142,7 +145,7 @@ async function feihuaView() {
       <div class="tagrow" id="fh-chars">${FEI_CHARS.map(c => `<button type="button" data-ch="${c}"${c === ch ? ' class="on"' : ''}>${c}</button>`).join('')}</div>
       <div class="game-score" id="fh-score"></div>
     </div>
-    <div id="fh-board"><div class="loading"></div></div>`;
+    <div id="fh-board"><div class="loading"></div></div>`);
 
   const scoreEl = document.getElementById('fh-score');
   const board = document.getElementById('fh-board');
@@ -164,7 +167,7 @@ async function feihuaView() {
           `<div class="fh-src">此句全库未检得——接不上，输了这一局</div></div>`
         : `<div class="card ${side}"><div class="fh-who">${h.who}</div>` +
           `<div class="fh-sent">${ord(h)}${esc(zhShow(h.s))}</div>` +
-          (h.t ? `<div class="fh-src">——《${esc(zhShow(h.t))}》${esc(zhShow(h.a || ''))}${h.id != null ? ` <a href="#/p/${h.id}">读全诗</a>` : ''}</div>` : '') +
+          (h.t ? `<div class="fh-src">——《${esc(zhShow(h.t))}》${esc(zhShow(h.a || ''))}${h.id != null ? ` <a href="#/p/${encodeURIComponent(String(h.id))}">读全诗</a>` : ''}</div>` : '') +
           `</div>`;
   };
 
@@ -295,7 +298,8 @@ async function feihuaView() {
       if (!over) closeRound();    // 打到一半换令＝弃局：也算终了一局（没接过句则不计）
       ch = b.dataset.ch;
       gameSeq++;
-      setTimeout(() => { loadFhAll(ch).catch(() => {}); }, 1200);   // 换令后同样后台预热全量
+      if (warmTimer) { clearTimeout(warmTimer); warmTimer = null; }   // 换令：撤掉上一个令字的预热
+      warmTimer = setTimeout(() => { warmTimer = null; if (isCurrent(seq)) loadFhAll(ch).catch(() => {}); }, 1200);
       for (const x of document.querySelectorAll('#fh-chars button')) x.classList.toggle('on', x === b);
       my = 0; ai = 0; over = false;
       hist.length = 0;   // 双方出过的句随 hist 一并清账

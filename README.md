@@ -72,7 +72,7 @@ npm test                   # 408 项，约 3 秒，零依赖
 |---|---|---|---|
 | **① Release 解包**（推荐） | 下载数据分卷，解第一个卷即自动串接 | 几分钟 | 见下方「数据快照」 |
 | **② 本地拷贝** | 同一台机器上把 `site/data/` 直接复制过来 | 几十秒 | 手上有备份（`site/data` 或 `../backup-json-20261103/`） |
-| **③ build 重建** | `bash etl/safe-build.sh`（唯一入口） | 十几分钟，产出明文 5.87GB，还要 `pack` + `gz` | **最后手段**：只在要改数据/加集合时用；本机源已齐（preflight 通过） |
+| **③ build 重建** | `bash etl/safe-build.sh --deploy-ready`（唯一入口） | 十几分钟，产出明文 5.87GB 后由同一事务完成 `pack` + `gz` | **最后手段**：只在要改数据/加集合时用；本机源已齐（preflight 通过） |
 
 `build` 只在「要改数据 / 加集合」时才需要，单纯想跑起来不必走这条路。
 
@@ -105,13 +105,13 @@ Get-FileHash shanchuang-data-YYYYMMDD.7z.00* -Algorithm SHA256
 
 ### 如果要重建或改数据
 
-**构建的唯一入口是 `bash etl/safe-build.sh`**（自带 `ops/.build.lock`、备份 `site/data`、总量校验、失败回滚）。
-不要直接跑 `npm run build` 或 `node etl/build.js`——绕过锁和备份，正是 2026-11-03 把 214 万条重建成 47 万条的事故原因。
+**构建的唯一入口是 `bash etl/safe-build.sh`**（原子锁 `ops/.build.lock.d`、备份 `site/data`、总量/集合/分块校验、失败回滚）。
+`npm run build` 已指向 `bash etl/safe-build.sh`；**禁止 `build:raw` / `node etl/build.js`**（仅供调试，绕过锁和备份，正是 2026-11-03 把 214 万条重建成 47 万条的事故原因）。
 
 ```bash
-bash etl/safe-build.sh          # 锁 → preflight → 备份 → build → 校验 total → 失败回滚
-npm run pack -- --go            # 文件数 29,001 → 14,000（规避托管方 2 万文件上限）
-npm run gz -- --go              # 明文 5.87GB → .gz 2.7GB（前端透明解压）
+bash etl/safe-build.sh                 # 只做 build：锁 → preflight → 备份 → build → 校验 → 失败回滚
+bash etl/safe-build.sh --deploy-ready  # 完整链路：build + pack + gz 在同一把锁 / 同一个回滚事务内
+bash deploy-cf.sh --skip-build         # 发布（数据已就绪）
 ```
 
 - **构建产出的是明文 `site/data`（约 5.87GB）**，`pack` + `gz` 两步必须跑完才算回到可部署形态。
@@ -122,14 +122,18 @@ npm run gz -- --go              # 明文 5.87GB → .gz 2.7GB（前端透明解�
 
 ## 发布
 
+**只改代码/文档（数据未变）**：
+
 ```bash
-export CLOUDFLARE_API_TOKEN=...      # Account · Cloudflare Pages · Edit
-export CLOUDFLARE_ACCOUNT_ID=...
-npx wrangler pages deploy site --project-name shanchuang --branch main
+bash deploy-cf.sh --skip-build
 ```
 
-- **不要用 `wrangler login`**：它要跳 `welcome.developers.workers.dev`，国内访问超时。
-  改用 API Token，全程只碰 `api.cloudflare.com`。
+**完整链路（数据也变了，须用户明确要求）** = `bash etl/safe-build.sh --deploy-ready` + `bash deploy-cf.sh`
+（`deploy-cf.sh` 不带参数即自动先跑 `safe-build --deploy-ready`；若已单独准备数据，第二命令加 `--skip-build` 避免重复构建）。
+
+- `deploy-cf.sh` 内部注入 API Token（默认读 `/c/Users/xiang/Downloads/cf-token.txt`）、解析钉死版本 4.156.2 的 wrangler 并应用并发补丁；**不要手工 `wrangler` 直连**。
+- **不要用 `wrangler login`**：它要跳 `welcome.developers.workers.dev`，国内访问超时；全程只碰 `api.cloudflare.com`。
+- **CloudBase 同步策略（统一规则）**：**只改代码不同步镜像**（体验版 3GB 已用约 2.62GB）；确实需要镜像时显式执行 cosfix 流程。
 - Pages 按内容哈希去重，只改 js/css/html 时通常只传几个文件、几秒完成。
 - 托管方硬限制：每站 **20,000 文件**、单文件 **25MiB**——`pack` 与 `gz` 就是为这两条准备的。
 

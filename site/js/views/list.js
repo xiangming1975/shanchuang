@@ -1,5 +1,6 @@
 // 页面：list
 import { app, topbar, rowLink } from '../vcommon.js';
+import { setAppHTML, isCurrent, currentRenderSeq } from '../render-guard.js';
 import { getManifest, getPoem, prefetchPoems, cachedText, colIndexOf, getChunkMap, chunkIndexOf, getDedupRemap, clearNavCtx } from '../store.js';
 import { dedupeKey, zhShow } from '../fn.js';
 import { esc } from '../py.js';
@@ -18,28 +19,30 @@ export async function dedupeRows(rows) {
   return [...best.values()];
 }
 
-async function listView(seg) {
+async function listView(seg, seq = currentRenderSeq()) {
   clearNavCtx();   // 从集合目录进入 = 该集合的物理导航（2026-11-01 navCtx）
   const [cid, pageRaw] = seg;
   const [pageStr, query] = String(pageRaw || '').split('?');
   const cur = +(new URLSearchParams(query || '').get('cur') || 0) || 0;
   const m = await getManifest();
+  if (!isCurrent(seq)) return;
   const col = m.collections.find(c => c.id === cid);
-  if (!col) { app.innerHTML = topbar('未找到') + '<div class="empty-state">集合不存在</div>'; return; }
+  if (!col) { setAppHTML(seq, topbar('未找到') + '<div class="empty-state">集合不存在</div>'); return; }
   const page = Math.max(0, Math.min(col.chunks.length - 1, parseInt(pageStr || '0') || 0));
   const total = col.visible != null ? col.visible : col.count;
   // 分类列表是唯一"横条去掉后没标题"的二级页：页面内没有别的卡片能说明这是哪一本
-  app.innerHTML = `<div class="card"><h2>${esc(zhShow(col.name))}</h2>
+  setAppHTML(seq, `<div class="card"><h2>${esc(zhShow(col.name))}</h2>
       <div class="section-tip" style="margin:4px 0 0">共 ${total.toLocaleString()} 篇${col.note ? ' · ' + esc(zhShow(col.note)) : ''}</div></div>` +
     `<div id="backcur"></div><div id="list-box"><div class="loading"></div></div>
     <div class="pager">
       <button id="pg-prev" ${page === 0 ? 'disabled' : ''}>上一页</button>
       <span class="pg">${page + 1} / ${col.chunks.length}</span>
       <button id="pg-next" ${page >= col.chunks.length - 1 ? 'disabled' : ''}>下一页</button>
-    </div>`;
+    </div>`);
   const box = document.getElementById('list-box');
   try {
     const arr = JSON.parse(await cachedChunk(col.id, page));
+    if (!isCurrent(seq)) return;
     const rows = arr.filter(r => !r.hide);
     // 课本页按册次分组（一年级上册 → 九年级下册），否则 168 篇平铺看不出年级
     box.innerHTML = `<div class="list">${col.id === 'keben' ? kebenGrouped(rows) : rows.map(r => rowLink(r)).join('')}</div>`;

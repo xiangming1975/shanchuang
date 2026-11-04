@@ -1,6 +1,7 @@
 // 页面：detail
 
-import { PROSE_SET, PAIR_SET, CI_SET, layoutParagraph, layoutSentences, makeLineFits, app, topbar, popupMsg, popHost, toggleTheme, LE_PREFIX, COLLECT_URL } from '../vcommon.js';
+import { PROSE_SET, PAIR_SET, CI_SET, layoutParagraph, layoutSentences, makeLineFits, app, topbar, popupMsg, popHost, toggleTheme, LE_PREFIX, COLLECT_URL, safeDecode, closePopup, rememberPopupFocus } from '../vcommon.js';
+import { setAppHTML, isCurrent, currentRenderSeq } from '../render-guard.js';
 import { getPoem, isFav, toggleFav, pushHistory, pref, addRecite, removeRecite, getRecites, addExcerpt, getPingze, getCitpl, getGenre, luckyPoemId, markRead, readStats, isRead, getNotes, addNote, updateNote, removeNote, getMingju, navCtxOf, getChunkMap, chunkIndexOf } from '../store.js';
 import { placeNotes, normLine } from '../notes.js';
 import { detectRegulated, buildPingze, detectCi, buildCiPingze, buildToneOnly, guessGuTi } from '../regu.js';
@@ -27,22 +28,24 @@ let readState = null;   // 朗诵状态 { poemId, poem, queue:[{text,li}], idx, 
 let readLines = [];     // 每次 renderPoem 写入：[{ t, li }]，与正文 .line[data-li] 一一对应
 let curPoemId = null;   // 当前渲染的详情页作品 id（名句卡异步插入时防串台）
 
-async function detailView(seg) {
+async function detailView(seg, seq = currentRenderSeq()) {
   const id = parseInt(seg[0]);
-  if (isNaN(id)) { app.innerHTML = topbar('错误') + '<div class="empty-state">无效的编号</div>'; return; }
+  if (isNaN(id)) { setAppHTML(seq, topbar('错误') + '<div class="empty-state">无效的编号</div>'); return; }
   // 加载中不再画一条「诗词详情」横栏：版面重构后详情页本来就没有顶栏，一闪而过的横栏很跳
-  app.innerHTML = '<div class="loading dv-loading"></div>';
+  setAppHTML(seq, '<div class="loading dv-loading"></div>');
   maskState = null;
   const poem = await getPoem(id).catch(() => null);
-  if (!poem) { app.innerHTML = topbar('未找到', { back: true }) + '<div class="empty-state">作品不存在或数据缺失</div>'; return; }
+  if (!isCurrent(seq)) return;
+  if (!poem) { setAppHTML(seq, topbar('未找到', { back: true }) + '<div class="empty-state">作品不存在或数据缺失</div>'); return; }
   if (poem.hide) {
     // 下线记录（etl/xds-exclude.json 打了 hide:1，列表与索引里都不可见）：直链/旧历史
     // 回跳到这里时给明确的空态，不再当正常作品渲染——否则下线的新诗/散文会混进
     // 诗词集的口径里（近现代集 268 条里有 30 篇，顺序浏览必然撞上）。
-    app.innerHTML = topbar('已下线') + '<div class="empty-state"><div class="big">隐</div>该篇已下线，不在收录范围<br><a style="color:var(--accent)" href="#/">回首页</a></div>';
+    setAppHTML(seq, topbar('已下线') + '<div class="empty-state"><div class="big">隐</div>该篇已下线，不在收录范围<br><a style="color:var(--accent)" href="#/">回首页</a></div>');
     return;
   }
   await loadCharMap();
+  if (!isCurrent(seq)) return;
   // 2026-11-02：12 个新集合分块不按 200 对齐，集合链接页码走 chunkmap 二分；
   // 表缺失回退旧公式（老集合均匀 200 仍成立）。renderPoem 是同步函数，这里预计算好。
   try {
@@ -54,6 +57,7 @@ async function detailView(seg) {
         ? chunkIndexOf(poem.i, fi) : Math.floor((poem.i - col0.start) / 200);
     }
   } catch {}
+  if (!isCurrent(seq)) return;
   // 体裁判定 + 无平仄时的推定。体裁标签每首都给，所以这里总要跑一次。
   try {
     {
@@ -106,6 +110,7 @@ async function detailView(seg) {
       }
     }
   } catch {}
+  if (!isCurrent(seq)) return;
   // 相邻导航跳过 hide:1 的下线记录：邻位通常在同一分块，getPoem 走内存/IDB 缓存，循环几乎不跑。
   // 结果挂在 poem 上（_prev/_next），renderPoem 的重渲染直接复用，不用变 async。
   // 2026-11-01（第七轮 P0-1 修复）：边界从 count（存活条数）改为 span（id 跨度）——
@@ -138,7 +143,8 @@ async function detailView(seg) {
   poem._prev = await neighborVisible(-1, navq);
   poem._next = await neighborVisible(1, navq);
   pushHistory(id);
-  renderPoem(poem);
+  if (!isCurrent(seq)) return;
+  renderPoem(poem, seq);
 }
 
 // ---------------- 摘录本：划选正文 → 悬浮按钮保存 ----------------
@@ -229,7 +235,7 @@ function maskHTML(line, level) {
     if (/[\u3400-\u4dbf\u4e00-\u9fff]/.test(ch)) {
       const hide = level === 'all' || (cjk % 3 !== 2);
       cjk++;
-      out += hide ? `<span class="mask">${esc(ch)}</span>` : esc(ch);
+      out += hide ? `<span class="mask" tabindex="0">${esc(ch)}</span>` : esc(ch);
     } else out += esc(ch);
   }
   return out;
@@ -255,8 +261,7 @@ function bindPopupDismiss() {
     const pop = document.getElementById('fn-pop');
     if (!pop || pop.classList.contains('hidden')) return;
     if (e.target.closest && (e.target.closest('.fn-card') || e.target.closest('.fn'))) return;
-    pop.classList.add('hidden');
-    pop.innerHTML = '';
+    closePopup(pop);
   }, true);
 }
 // 模块加载即生效，保证设置页、摘录页、收藏页的浮窗也能点外部关闭
@@ -280,16 +285,20 @@ function bindFnPopup() {
         <button class="fn-close" id="fn-ok">关闭</button>
       </div>
     </div>`;
+    rememberPopupFocus();
+    pop.setAttribute('role', 'dialog');
+    pop.setAttribute('aria-modal', 'true');
     pop.classList.remove('hidden');
     // 关闭键要绑 <button>，不能绑首个 .fn-close（那是「相关诗词」链接，绑错会导致关闭失效）
     const fnOk = pop.querySelector('#fn-ok');
-    if (fnOk) fnOk.onclick = (ev) => { ev.stopPropagation(); pop.classList.add('hidden'); };
+    if (fnOk) fnOk.onclick = (ev) => { ev.stopPropagation(); closePopup(pop); };
     const fnRel = pop.querySelector('#fn-rel');
-    if (fnRel) fnRel.onclick = (ev) => { ev.stopPropagation(); pop.classList.add('hidden'); };
+    if (fnRel) fnRel.onclick = (ev) => { ev.stopPropagation(); closePopup(pop); };
   });
 }
 
-function renderPoem(poem) {
+function renderPoem(poem, seq = currentRenderSeq()) {
+  if (!isCurrent(seq)) return;
   curPoemId = poem.i;
   // rawPoem：未做简繁转换的原件。链接（作者 / 体裁 / 标签）必须用它——索引键是
   // 原文的写法，转换后的名字查不到；显示一律走转换副本。
@@ -328,7 +337,11 @@ function renderPoem(poem) {
   const pyWanted = pref('py') === '1';
   if (pyWanted && !hasPinyinLib() && !pyLibKicking) {
     pyLibKicking = true;
-    ensurePinyinLib().then(ok => { pyLibKicking = false; if (ok) renderPoem(poem); });
+    ensurePinyinLib().then(ok => {
+      if (!isCurrent(seq) || curPoemId !== poem.i || !document.getElementById('poem-body')) return;
+      pyLibKicking = false;
+      if (ok) renderPoem(poem, seq);
+    });
   }
   const pyOn = pyWanted && hasPinyinLib();
   // 平仄来源：源数据优先；没有时用格律推定（仅近体诗，且模板匹配度够）
@@ -440,7 +453,7 @@ function renderPoem(poem) {
   // 释文（题解/译文/注释/赏析/创作背景）默认展开，可在设置里关掉；顶部标签与功能条不受影响。
   const annotOpen = pref('ao') !== '0';
   const annotCard = (titleText, contentHtml) =>
-    `<div class="card card--soft${annotOpen ? ' fold-open' : ''}" data-fold><h2 class="fold-head">${titleText}<span class="fold-btn">${annotOpen ? '−' : '+'}</span></h2><div class="annotate fold-body">${contentHtml}</div></div>`;
+    `<div class="card card--soft${annotOpen ? ' fold-open' : ''}" data-fold><button type="button" class="fold-head" aria-expanded="${annotOpen ? 'true' : 'false'}">${titleText}<span class="fold-btn">${annotOpen ? '−' : '+'}</span></button><div class="annotate fold-body">${contentHtml}</div></div>`;
 
   let cards = '';
   if (!maskOn) {
@@ -475,7 +488,7 @@ function renderPoem(poem) {
   const ttsOn = readState && readState.poemId === poem.i;
 
   const scrollTop = window.scrollY;
-  app.innerHTML = `
+  setAppHTML(seq, `
     <header class="dv-head" id="dv-head">
     ${isRead(poem.i) ? '<span class="rd-seal" title="这一篇读过了"><i>字字珠玑</i><i>尽收眼底</i></span>' : ''}
       <div class="dv-top">
@@ -546,7 +559,7 @@ function renderPoem(poem) {
     ${poem._navq ? `<div class="navq">${esc(zhShow(poem._navq.label))} · 第 ${poem._navq.pos + 1} / ${poem._navq.total} 篇</div>` : ''}
 
     <div id="fn-pop" class="hidden"></div>
-    <div id="note-pop" class="hidden"></div>`;
+    <div id="note-pop" class="hidden"></div>`);
 
   // 题名折行时，左边界对齐工具栏「拼音」按钮（10px）；单行时仍保持居中。
   // 用实测行高判断而不是数字符——字号分了三档，字符数换算不准。
@@ -808,8 +821,8 @@ function renderPoem(poem) {
       const r = addRecite(poem.i);
       pop.innerHTML = `<div class="fn-card"><div class="fn-term">已记录背诵 ✓</div><div class="fn-expl">今日已打卡！可到「背诵」页查看热力图与复习计划。</div><button class="fn-close" id="rc-ok">好的</button></div>`;
       pop.classList.remove('hidden');
-      pop.querySelector('#rc-ok').onclick = (ev) => { ev.stopPropagation(); pop.classList.add('hidden'); };
-      renderPoem(poem);
+      pop.querySelector('#rc-ok').onclick = (ev) => { ev.stopPropagation(); closePopup(pop); };
+      renderPoem(poem, seq);
       window.scrollTo(0, scrollTop);
     } else {
       pop.innerHTML = `<div class="fn-card">
@@ -821,12 +834,12 @@ function renderPoem(poem) {
           <button class="fn-close" id="rc-ok">关闭</button>
         </div></div>`;
       pop.classList.remove('hidden');
-      pop.querySelector('#rc-add').onclick = (ev) => { ev.stopPropagation(); addRecite(poem.i); renderPoem(poem); };
-      pop.querySelector('#rc-del').onclick = (ev) => { ev.stopPropagation(); removeRecite(poem.i); renderPoem(poem); };
-      pop.querySelector('#rc-ok').onclick = (ev) => { ev.stopPropagation(); pop.classList.add('hidden'); };
+      pop.querySelector('#rc-add').onclick = (ev) => { ev.stopPropagation(); addRecite(poem.i); renderPoem(poem, seq); };
+      pop.querySelector('#rc-del').onclick = (ev) => { ev.stopPropagation(); removeRecite(poem.i); renderPoem(poem, seq); };
+      pop.querySelector('#rc-ok').onclick = (ev) => { ev.stopPropagation(); closePopup(pop); };
     }
   };
-  document.getElementById('share-btn').onclick = () => { openMenu(false); import('../card.js').then(m => m.makeShareCard(poem, displayLines, title)); };
+  document.getElementById('share-btn').onclick = () => { openMenu(false); import('../card.js').then(m => { if (!isCurrent(seq) || curPoemId !== poem.i || !document.getElementById('poem-body')) return; m.makeShareCard(poem, displayLines, title); }); };
   // 「＋ 写眉批」：进出选点模式（模式内点任意行开编辑器）
   const noteBtn = document.getElementById('note-btn');
   if (noteBtn) noteBtn.onclick = () => {
@@ -843,46 +856,47 @@ function renderPoem(poem) {
       popupMsg('拼音库加载中，稍候即开…', '好的');
       pyLibKicking = true;
       ensurePinyinLib().then(ok => {
+        if (!isCurrent(seq) || curPoemId !== poem.i || !document.getElementById('poem-body')) return;
         pyLibKicking = false;
         if (!ok) { popupMsg('拼音库加载失败，请联网后重试。', '好的'); return; }
         pref('py', '1');
-        renderPoem(poem);
+        renderPoem(poem, seq);
         window.scrollTo(0, scrollTop);
       });
       return;
     }
     pref('py', want ? '1' : '0');
-    renderPoem(poem);
+    renderPoem(poem, seq);
     window.scrollTo(0, scrollTop);
   };
   const stBtn = document.getElementById('st-btn');
   if (stBtn) stBtn.onclick = () => {
     pref('st', pref('st') === '1' ? '0' : '1');
-    renderPoem(poem);
+    renderPoem(poem, seq);
     window.scrollTo(0, scrollTop);
   };
   const tyBtn = document.getElementById('ty-btn');
   if (tyBtn) tyBtn.onclick = () => {
     pref('ty', pref('ty') !== '0' ? '0' : '1');
-    renderPoem(poem);
+    renderPoem(poem, seq);
     window.scrollTo(0, scrollTop);
   };
   const fnBtn = document.getElementById('fn-btn');
   if (fnBtn) fnBtn.onclick = () => {
     pref('fn', pref('fn') === '1' ? '0' : '1');
-    renderPoem(poem);
+    renderPoem(poem, seq);
     window.scrollTo(0, scrollTop);
   };
   // 尝试背诵：从 ☰ 面板挪到正文末尾的操作条，跟「我能背诵」并排（2026-10-28）
   document.getElementById('rd-mask').onclick = () => {
     maskState = maskState ? null : { level: 'half' };
-    renderPoem(poem);
+    renderPoem(poem, seq);
     window.scrollTo(0, scrollTop);
   };
   const maskLevelBtn = document.getElementById('mask-level');
   if (maskLevelBtn) maskLevelBtn.onclick = () => {
     maskState.level = maskState.level === 'half' ? 'all' : 'half';
-    renderPoem(poem);
+    renderPoem(poem, seq);
     window.scrollTo(0, scrollTop);
   };
   const maskRevealBtn = document.getElementById('mask-reveal');
@@ -892,7 +906,7 @@ function renderPoem(poem) {
   document.getElementById('tts-btn').onclick = () => toggleRead(poem, title);
   document.getElementById('fs-dec').onclick = () => stepFs(-1);
   document.getElementById('fs-inc').onclick = () => stepFs(1);
-  document.getElementById('theme-btn').onclick = () => { toggleTheme(); renderPoem(poem); };
+  document.getElementById('theme-btn').onclick = () => { toggleTheme(); renderPoem(poem, seq); };
   const autoBtn = document.getElementById('auto-btn');
   if (autoBtn) autoBtn.onclick = () => {
     pref('autoplay', pref('autoplay') === '1' ? '0' : '1');
@@ -908,9 +922,16 @@ function renderPoem(poem) {
   // 背诵模式：点击隐藏字揭示
   if (maskOn) {
     hideExcFab();
-    document.getElementById('poem-body').addEventListener('click', (e) => {
+    const pb = document.getElementById('poem-body');
+    pb.addEventListener('click', (e) => {
       const m = e.target.closest('.mask');
       if (m) m.classList.add('reveal');
+    });
+    // 键盘用户：Enter / Space 揭示当前聚焦的隐藏字（v192 可访问性）
+    pb.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      const m = e.target.closest && e.target.closest('.mask');
+      if (m) { e.preventDefault(); m.classList.add('reveal'); }
     });
     return; // 背诵模式不绑脚注
   }
@@ -940,7 +961,7 @@ function notesCardMarkup(poem) {
   const list = getNotes(poem.i);
   if (!list.length) return '';
   return '<div class="card" id="my-notes-card" data-fold>' +
-    '<h2 class="fold-head">我写的眉批<span class="gnum">' + list.length + '</span><span class="fold-btn">+</span></h2>' +
+    '<button type="button" class="fold-head" aria-expanded="false">我写的眉批<span class="gnum">' + list.length + '</span><span class="fold-btn">+</span></button>' +
     '<div class="fold-body">' + noteItemsHTML(poem) + '</div></div>';
 }
 
@@ -1053,8 +1074,8 @@ function mountNotes(poem) {
   // 从「我的眉批」页跳进来：#/p/123?n=<批注 id> —— 滚到那一条并闪一下
   const hit = (location.hash.match(/[?&]n=([^&]+)/) || [])[1];
   if (hit) {
-    const nid = decodeURIComponent(hit).replace(/["\\]/g, '');
-    const el = body.querySelector('.note-inline[data-nid="' + nid + '"]');
+    const nid = safeDecode(hit).replace(/["\\]/g, '');
+    const el = [...body.querySelectorAll('.note-inline')].find(e => e.dataset.nid === nid) || null;
     if (el) {
       setTimeout(() => {
         try { el.scrollIntoView({ block: 'center' }); } catch (e) { try { el.scrollIntoView(); } catch (e2) {} }
@@ -1116,7 +1137,7 @@ function mountNotes(poem) {
 function flashVerse() {
   const hit = (location.hash.match(/[?&]v=([^&]+)/) || [])[1];
   if (!hit) return;
-  const v = simpStr(normLine(decodeURIComponent(hit)));
+  const v = simpStr(normLine(safeDecode(hit)));
   if (!v) return;
   const body = document.getElementById('poem-body');
   if (!body) return;
@@ -1189,7 +1210,7 @@ function mountMingju(poem) {
     const anchor = document.getElementById('read-done');
     anchor.insertAdjacentHTML('beforebegin',
       '<div class="card" id="poem-mj-card" data-fold>' +
-      '<h2 class="fold-head">本篇名句<span class="gnum">' + rows.length + '</span><span class="fold-btn">+</span></h2>' +
+      '<button type="button" class="fold-head" aria-expanded="false">本篇名句<span class="gnum">' + rows.length + '</span><span class="fold-btn">+</span></button>' +
       '<div class="fold-body">' +
       rows.map(r => '<button type="button" class="mj-copy" data-v="' + esc(r[0]) + '">「' + esc(zhShow(r[0])) + '」</button>').join('') +
       '<div class="section-tip">点句子复制，分享给朋友。</div>' +
@@ -1409,10 +1430,10 @@ function readErrText(err) {
 function hintRead(msg) {
   const text = msg || '没有可用的中文语音。安卓：设置 → 系统 → 语言和输入法 → 文字转语音，安装并选用中文引擎（如「语音服务」「Google 文字转语音」）；iPhone：设置 → 辅助功能 → 朗读内容 → 声音 → 中文，先下载一个中文嗓音。';
   const pop = popHost();       // 全站懒创建，任何页面都有浮窗可用
-  pop.innerHTML = '<div class="fn-card"><div class="fn-term">朗诵不可用</div><div class="fn-expl">' + text + '</div><button class="fn-close">知道了</button></div>';
+  pop.innerHTML = '<div class="fn-card"><div class="fn-term">朗诵不可用</div><div class="fn-expl">' + esc(text) + '</div><button class="fn-close">知道了</button></div>';
   pop.classList.remove('hidden');
   const close = pop.querySelector('.fn-close');
-  if (close) close.onclick = (ev) => { ev.stopPropagation(); pop.classList.add('hidden'); };
+  if (close) close.onclick = (ev) => { ev.stopPropagation(); closePopup(pop); };
 }
 
 function stepFs(d) {

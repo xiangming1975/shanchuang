@@ -1,5 +1,6 @@
 // 页面：mine
-import { app, topbar, rowLink, cutTitle, displayTitle, titleMax, reciteDue, DAY, dayKey, fmtDate, popupMsg, popupConfirm, applyTheme, applyKaiFont, clearThemeFlip, rowMeta, emptyHtml } from '../vcommon.js';
+import { app, topbar, rowLink, cutTitle, displayTitle, titleMax, reciteDue, DAY, dayKey, fmtDate, popupMsg, popupConfirm, applyTheme, applyKaiFont, clearThemeFlip, rowMeta, emptyHtml, PAD } from '../vcommon.js';
+import { setAppHTML, isCurrent, currentRenderSeq } from '../render-guard.js';
 import { stepFs } from './detail.js';
 import { getSearchHist, getPoem, getFavs, getHistory, pref, removeRecite, getRecites, getReciteLog, exportAllData, importAllData, clearUserData, getExcerpts, removeExcerpt, colIdOf, luckyPoemId, noteTotal, getAllNotes } from '../store.js';
 import { loadRowsByIds } from './list.js';
@@ -11,19 +12,19 @@ import { convTree } from '../uizh.js';
 
 // 这五个板块（摘录 / 收藏 / 背诵 / 设置）不用顶部横条：底部 tab 已经指明位置，
 // 再顶一条"我的摘录"是重复。PAD 只补一点上方留白，不让内容贴边。
-const PAD = '<div class="page-pad"></div>';
 
-async function excerptView() {
+async function excerptView(seg, seq = currentRenderSeq()) {
   const list = getExcerpts();
   if (!list.length) {
-    app.innerHTML = PAD + favSeg('exc') +
-      emptyHtml('摘', '还没有摘录<br>在详情页划选诗句，点「摘录此句」即可保存');
+    setAppHTML(seq, PAD + favSeg('exc') +
+      emptyHtml('摘', '还没有摘录<br>在详情页划选诗句，点「摘录此句」即可保存'));
     return;
   }
-  app.innerHTML = PAD + favSeg('exc') +
-    '<div class="loading"></div><div id="fn-pop" class="hidden"></div>';
+  setAppHTML(seq, PAD + favSeg('exc') +
+    '<div class="loading"></div><div id="fn-pop" class="hidden"></div>');
   const show = list.slice(0, 300);
   const poems = await Promise.all(show.map(e => getPoem(e.i).catch(() => null)));
+  if (!isCurrent(seq)) return;
   const groups = new Map();
   show.forEach((e, k) => {
     if (!groups.has(e.i)) groups.set(e.i, { poem: poems[k], items: [] });
@@ -38,9 +39,9 @@ async function excerptView() {
       g.items.map(e => `<div class="exc-row"><span class="exc-t">「${esc(e.t)}」</span><button class="exc-del" data-id="${esc(e.id)}" title="删除此条">×</button></div>`).join('') +
       '</div>');
   }
-  app.innerHTML = PAD + favSeg('exc') +
+  setAppHTML(seq, PAD + favSeg('exc') +
     `<div class="section-tip" style="text-align:center">共 ${list.length} 条${list.length > 300 ? '（显示前 300 条）' : ''}</div>` +
-    parts.join('') + '<div id="fn-pop" class="hidden"></div>';
+    parts.join('') + '<div id="fn-pop" class="hidden"></div>');
   document.querySelectorAll('.exc-del').forEach(b => {
     b.onclick = (ev) => { ev.stopPropagation(); removeExcerpt(b.dataset.id); excerptView(); };
   });
@@ -57,29 +58,30 @@ function favSeg(active) {
   </div>`;
 }
 
-async function favView() {
+async function favView(seg, seq = currentRenderSeq()) {
   const ids = getFavs();
-  app.innerHTML = PAD + favSeg('fav') + (ids.length ? '<div class="loading"></div>' :
+  setAppHTML(seq, PAD + favSeg('fav') + (ids.length ? '<div class="loading"></div>' :
     emptyHtml('藏', `还没有收藏作品<br>先从这几本翻起，喜欢再点收藏
       <div class="tagrow" style="justify-content:center;margin-top:14px">
         <a href="#/c/tang300/0">唐诗三百首</a><a href="#/c/songci300/0">宋词三百首</a><a href="#/c/shijing/0">诗经</a>
-      </div>`));
+      </div>`)));
   if (!ids.length) return;
   const show = ids.slice(0, 300);
   const poems = await Promise.all(show.map(id => getPoem(id).catch(() => null)));
+  if (!isCurrent(seq)) return;
   const rows = poems.filter(Boolean).map(p => rowLink(p)).join('');
-  app.innerHTML = `
+  setAppHTML(seq, `
     ${PAD}
     <div class="section-tip" style="text-align:right;margin:0 2px 6px">共 ${ids.length} 篇</div>
     ${favSeg('fav')}
     <div class="list">${rows}</div>
-    ${ids.length > 300 ? '<div class="section-tip" style="text-align:center">仅显示前 300 篇</div>' : ''}`;
+    ${ids.length > 300 ? '<div class="section-tip" style="text-align:center">仅显示前 300 篇</div>' : ''}`);
 }
 
 // ---------------- 背诵板块 ----------------
 
-async function reciteView() {
-  app.innerHTML = PAD + '<div class="loading"></div>';
+async function reciteView(seg, seq = currentRenderSeq()) {
+  setAppHTML(seq, PAD + '<div class="loading"></div>');
   const recites = getRecites();
   const log = getReciteLog();
   const ids = Object.keys(recites).map(Number).sort((a, b) => (recites[b].last || 0) - (recites[a].last || 0));
@@ -123,7 +125,7 @@ async function reciteView() {
       const c = days[k] || 0;
       const lvl = c === 0 ? 0 : c === 1 ? 1 : c <= 3 ? 2 : 3;
       const future = d > today0;
-      cells += `<i class="hm-cell${future ? ' future' : ' l' + lvl}" title="${k}${c ? ' · ' + c + ' 次' : ''}"></i>`;
+      cells += `<i class="hm-cell${future ? ' future' : ' l' + lvl}" role="img" aria-label="${k} ${c || 0} 次" title="${k}${c ? ' · ' + c + ' 次' : ''}"></i>`;
       // 月标：列内含 1 号即标（GitHub 同款）。旧版只看周一的月份——月初落在周二~周日时
       //（如 2026-11-01 周日），该列周一还属上月，11 月标永远打不出来，看着像「日历缺了一个月」。
       if (d.getDate() === 1) monthLabels.push([w, d.getMonth() + 1]);
@@ -135,13 +137,15 @@ async function reciteView() {
   // 待复习（遗忘曲线计算抽到 vcommon.reciteDue，首页复习卡共用）
   const due = reciteDue(recites, Date.now());
   const duePoems = await Promise.all(due.slice(0, 15).map(d => getPoem(d.id).catch(() => null)));
+  if (!isCurrent(seq)) return;
 
   // 全部列表（前 60）
   const listPoems = await Promise.all(ids.slice(0, 60).map(id => getPoem(id).catch(() => null)));
+  if (!isCurrent(seq)) return;
 
   const statBox = (v, l) => `<div class="stat"><b>${v}</b><span>${l}</span></div>`;
 
-  app.innerHTML = `
+  setAppHTML(seq, `
     ${PAD}
     ${ids.length === 0 ? emptyHtml('诵', `还没有背诵记录<br>抽一首读一遍，读到末尾点「我能背诵」就算记下了
         <div class="poem-toolbar" style="justify-content:center;margin-top:14px">
@@ -159,7 +163,7 @@ async function reciteView() {
     <div class="card"><h2>背诵日历</h2>
       <div class="hm-labels">${labelsHtml}</div>
       <div class="hm">${cells}</div>
-      <div class="hm-legend">少<i class="hm-cell l0"></i><i class="hm-cell l1"></i><i class="hm-cell l2"></i><i class="hm-cell l3"></i>多</div>
+      <div class="hm-legend">少<i class="hm-cell l0" role="img" aria-label="热度图例"></i><i class="hm-cell l1" role="img" aria-label="热度图例"></i><i class="hm-cell l2" role="img" aria-label="热度图例"></i><i class="hm-cell l3" role="img" aria-label="热度图例"></i>多</div>
     </div>
     ${duePoems.filter(Boolean).length ? `
     <div class="group-title">今日复习 · 遗忘曲线提醒（${due.length} 篇待复习）</div>
@@ -183,7 +187,7 @@ async function reciteView() {
         </div>`).join('')}
     </div>
     ${ids.length > 60 ? `<div class="section-tip" style="text-align:center">仅显示最近 60 篇</div>` : ''}`}
-    <div id="fn-pop" class="hidden"></div>`;
+    <div id="fn-pop" class="hidden"></div>`);
 
   const luckyRecite = document.getElementById('recite-lucky');
   if (luckyRecite) luckyRecite.onclick = async () => {
@@ -207,7 +211,7 @@ async function reciteView() {
 
 // ---------------- 设置页（含数据管理） ----------------
 
-async function settingsView() {
+async function settingsView(seg, seq = currentRenderSeq()) {
   const favs = getFavs().length;
   const recites = Object.keys(getRecites()).length;
   const his = getHistory().length;
@@ -226,7 +230,7 @@ async function settingsView() {
     const txt = label ? label + (on ? ' · 开' : ' · 关') : (on ? '开' : '关');
     return `<button class="set-toggle ${on ? 'on' : ''}" data-pref="${key}">${txt}</button>`;
   };
-  app.innerHTML = `
+  setAppHTML(seq, `
     ${PAD}
     <div class="card">
       <h2>外观</h2>
@@ -337,7 +341,7 @@ async function settingsView() {
         <p class="section-tip">许可（分层）：站点代码 <b>MIT</b>；本站整理的索引、校勘与去重层 <b>CC BY-NC-SA 4.0</b>；第三方语料保留各自原许可、<b>不重新授权</b>（含 GPL-3.0 / LGPL-3.0 / CC BY-NC / 未标注 成分）。整库不可按单一许可再分发，商用须逐源替换。<a href="#/src">详见数据来源与许可</a>。</p>
       </div>
     </div>
-    <div id="fn-pop" class="hidden"></div>`;
+    <div id="fn-pop" class="hidden"></div>`);
 
   // ---------- 外观 ----------
   // ---------- 一级显示模式：普通 / 水墨屏 ----------
@@ -482,6 +486,7 @@ async function settingsView() {
       const rows = await loadRowsByIds(groups.map(g => Number(g.pid)));
       map = new Map(rows.filter(r => r && r.i != null).map(r => [String(r.i), r]));
     } catch (e) {}
+    if (!isCurrent(seq)) return;
     const metaOf = (pid) => rowMeta(map.get(String(pid)), pid);
     const total = groups.reduce((s, g) => s + g.notes.length, 0);
     try {

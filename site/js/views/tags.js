@@ -6,6 +6,7 @@
 //   课本 / 体裁 / 书目 / 题材 四桶标签（原样保留）
 // 行令（飞花令 / 合璧）2026-10-31 起放首页晨读卡下方，不在本页。
 import { app, topbar } from '../vcommon.js';
+import { setAppHTML, isCurrent, currentRenderSeq } from '../render-guard.js';
 import { getTagBuckets, getManifest, getDynIndex } from '../store.js';
 import { esc } from '../py.js';
 import { zhShow } from '../fn.js';
@@ -33,16 +34,17 @@ const COL_GROUPS = [
 ];
 const cnt = c => (c.visible != null ? c.visible : c.count);
 
-async function tagIndexView() {
-  app.innerHTML = topbar('目录', { back: true }) + '<div class="loading"></div>';
+async function tagIndexView(seg, seq = currentRenderSeq()) {
+  setAppHTML(seq, topbar('目录', { back: true }) + '<div class="loading"></div>');
   let data = null, m = null, dyn = null;
   try { data = await getTagBuckets(); } catch { data = null; }
   try { m = await getManifest(); } catch { m = null; }
   try { dyn = await getDynIndex(); } catch { dyn = null; }
+  if (!isCurrent(seq)) return;
 
   if (!data || !data.rows) {
-    app.innerHTML = topbar('目录', { back: true }) +
-      '<div class="empty-state"><div class="big">空</div>标签索引未就绪，请刷新重试</div>';
+    setAppHTML(seq, topbar('目录', { back: true }) +
+      '<div class="empty-state"><div class="big">空</div>标签索引未就绪，请刷新重试</div>');
     return;
   }
   const b = data.rows;
@@ -102,10 +104,10 @@ async function tagIndexView() {
   const headTip = [nCol ? nCol + ' 部典籍' : '', nDyn ? nDyn + ' 段朝代' : '', total + ' 个标签']
     .filter(Boolean).join(' · ');
 
-  app.innerHTML = topbar('目录', { back: true }) +
+  setAppHTML(seq, topbar('目录', { back: true }) +
     `<div class="card"><h2>目录</h2><div class="section-tip" style="margin:4px 0 0">${headTip}</div></div>` +
     colHtml + dynHtml +
-    '<div class="dir-sep"></div>' + sectionHtml;
+    '<div class="dir-sep"></div>' + sectionHtml);
 
   for (const btn of document.querySelectorAll('[data-more]')) {
     btn.onclick = () => {

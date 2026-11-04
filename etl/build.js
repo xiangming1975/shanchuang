@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
+const { once } = require('events');   // 写流背压：write() 返 false 时等 'drain'（流 error 时自动 reject）
 const OpenCC = require('opencc-js');
 
 const OUT = 'C:/Users/xiang/Downloads/poetry-site/etl/out';
@@ -182,6 +183,18 @@ const FULLTEXT_FAMOUS = new Set(['tang', 'song']);
 const STRAIN_FILL = new Set(['tang300', 'qjs', 'mtssb', 'smts', 'hanwei', 'jinyuan', 'mingS', 'qingS', 'xdS', 'cc']);
 
 async function main() {
+  // 所有 createReadStream / createWriteStream 的错误都不静默：汇总到 fatalErr，
+  // 由 failIfFatal() 在本 async 函数内 throw，经 main().catch 以非零码退出。
+  // readStream 出错时同时 close 对应 readline，让 for-await 及时结束；
+  // extras 合并用的 readStream 则在其自身 Promise 内由 rs.on('error', rej) 处理。
+  let fatalErr = null;
+  let badLines = 0;
+  const guard = (s, rl) => s.on('error', (e) => {
+    fatalErr = fatalErr || e;
+    if (rl) rl.close();
+  });
+  const failIfFatal = () => { if (fatalErr) throw fatalErr; };
+
   // 注意：这里不再 rm -rf DATA。
   // 1) 环境的安全删除shim会拦截批量删除（阈值 50 个文件），整库删除必然触发；
   // 2) 构建是幂等覆盖的：分块文件名由 collStats 决定，manifest 只引用本次生成的 chunks，
@@ -270,15 +283,22 @@ async function main() {
   const strainMap = new Map(); // 全唐宋诗平仄 → 精选集映射键表
   const tmpStreams = {};
   let totalIn = 0;
-  const rl = readline.createInterface({ input: fs.createReadStream(MAIN, { encoding: 'utf8' }), crlfDelay: Infinity });
+  const rsA = fs.createReadStream(MAIN, { encoding: 'utf8' });
+  const rl = readline.createInterface({ input: rsA, crlfDelay: Infinity });
+  guard(rsA, rl);
   for await (const line of rl) {
     const line2 = line.trim();
     if (!line2) continue;
     let r;
-    try { r = JSON.parse(line2); } catch { continue; }
+    try { r = JSON.parse(line2); } catch { badLines++; continue; }
     if (!COLLECTIONS.find(x => x.id === r.c)) { console.log('未知集合，跳过: ' + r.c); continue; }
-    if (!tmpStreams[r.c]) tmpStreams[r.c] = fs.createWriteStream(path.join(OUT, 'tmp-' + r.c + '.jsonl'), { encoding: 'utf8' });
-    tmpStreams[r.c].write(line2 + '\n');
+    if (!tmpStreams[r.c]) {
+      tmpStreams[r.c] = fs.createWriteStream(path.join(OUT, 'tmp-' + r.c + '.jsonl'), { encoding: 'utf8' });
+      guard(tmpStreams[r.c]);
+    }
+    // 背压：write 返回 false 时等 'drain' 再继续（events.once 在流 'error' 时自动 reject）
+    if (!tmpStreams[r.c].write(line2 + '\n')) await once(tmpStreams[r.c], 'drain');
+    failIfFatal();
     // 平仄键表（全唐诗/全宋诗 → 供精选集映射）
     if ((r.c === 'tang' || r.c === 'song') && r.st && r.st.length) {
       const p0 = (r.p && r.p[0]) ? String(r.p[0]) : '';
@@ -292,7 +312,11 @@ async function main() {
     if (r.p) for (const ln of r.p) addChars(ln);
     totalIn++;
   }
-  await Promise.all(Object.values(tmpStreams).map(s => new Promise(res => s.end(res))));
+  failIfFatal();
+  await Promise.all(Object.values(tmpStreams).map(s => new Promise((res, rej) => {
+    s.on('error', rej);
+    s.end(res);
+  })));
   console.timeEnd('passA');
   console.log('PASS A: ' + totalIn + ' 条分组完成');
 
@@ -356,9 +380,12 @@ async function main() {
     curColl = coll.id;
     chunkIdx = 0;
     collStats[coll.id] = { count: 0, chunks: [] };
-    const rlB = readline.createInterface({ input: fs.createReadStream(tmpPath, { encoding: 'utf8' }), crlfDelay: Infinity });
+    const rsB = fs.createReadStream(tmpPath, { encoding: 'utf8' });
+    const rlB = readline.createInterface({ input: rsB, crlfDelay: Infinity });
+    guard(rsB, rlB);
     for await (const line of rlB) {
-      const r = JSON.parse(line);
+      let r;
+      try { r = JSON.parse(line); } catch { badLines++; continue; }
       r.i = gi;
       collStats[coll.id].count++;
       // ① gushiwen 把异文校记混进正文：沁园春·雪「(余 通：馀)」「(红装 一作：银装)」、
@@ -477,6 +504,7 @@ async function main() {
       gi++;
       if (chunkBuf.length >= CHUNK) flush();
     }
+    failIfFatal();
     flush();
     // 临时分块文件删不掉不影响产物：环境的安全删除 shim 偶尔会超时，
     // 这里用 unlink 并容错，避免整轮构建因为删一个中间文件而中断。
@@ -955,6 +983,7 @@ async function main() {
   };
   fs.writeFileSync(path.join(DATA, 'manifest.json'), JSON.stringify(manifest, null, 1));
   console.log(`manifest: ${start} 首, ${collManifest.length} 集合`);
+  console.log(`跳过坏行: ${badLines} 行（PASS A / PASS B 的 JSON.parse 失败，已跳过）`);
   console.log('BUILD_OK');
 }
 main().catch(e => { console.error(e); process.exit(1); });

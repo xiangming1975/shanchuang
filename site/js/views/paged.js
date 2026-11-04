@@ -19,37 +19,59 @@
 //   endEl              到底标记元素（textContent 置「— 到底了 —」）
 //   afterBatch(batch)  可选：每批渲染完的钩子（prefetch）
 
+import { setAppHTML, isCurrent, currentRenderSeq } from '../render-guard.js';
+
 export function pagedList(opt) {
   const { listEl, moreBtn, items, total, batchSize, itemHtml,
     prepare, fetchBatch, firstEmptyHtml, countUnit, endEl, afterBatch } = opt;
   let shown = 0;
 
   const more = async () => {
+    // 视图已被换掉：listEl 脱离 DOM，别往摘掉的节点里画（第十一轮渲染竞态）
+    // 只在明确脱离 DOM 时跳过；测试垫片没有 isConnected（undefined）不算脱离。
+    if (listEl.isConnected === false) return;
     const busy = !!(prepare || fetchBatch);
     if (busy) { moreBtn.disabled = true; moreBtn.textContent = '加载中…'; }
-    if (prepare) await prepare(shown + batchSize);
-    const batch = items().slice(shown, shown + batchSize);
-    if (!batch.length) { if (busy) moreBtn.disabled = false; return; }
-    const first = shown === 0;
-    shown += batch.length;   // 备料前先记账：await 期间重复点击不会重渲染同一批
-    let toRender = batch;
-    if (fetchBatch) {
-      try { toRender = (await fetchBatch(batch)) || batch; } catch {}
-      moreBtn.disabled = false;
+    try {
+      // prepare/fetchBatch 异常只给局部提示，不让整页落入错误态
+      if (prepare) {
+        try { await prepare(shown + batchSize); }
+        catch {
+          if (listEl.isConnected !== false && shown === 0) listEl.innerHTML = '<div class="section-tip">加载失败，请点「加载更多」重试</div>';
+          return;
+        }
+      }
+      if (listEl.isConnected === false) return;
+      const batch = items().slice(shown, shown + batchSize);
+      if (!batch.length) return;
+      const first = shown === 0;
+      shown += batch.length;   // 备料前先记账：await 期间重复点击不会重渲染同一批
+      let toRender = batch;
+      if (fetchBatch) {
+        try { toRender = (await fetchBatch(batch)) || batch; }
+        catch {
+          if (listEl.isConnected !== false && first) listEl.innerHTML = '<div class="section-tip">加载失败，请点「加载更多」重试</div>';
+          return;
+        }
+      }
+      if (listEl.isConnected === false) return;
+      // 首批：清掉 loading 占位；备料结果为空时换成调用方给的失败占位
+      if (first && firstEmptyHtml !== undefined) listEl.innerHTML = toRender.length ? '' : firstEmptyHtml;
+      listEl.insertAdjacentHTML('beforeend', toRender.map(itemHtml).join(''));
+      if (shown >= total()) {
+        moreBtn.classList.add('hidden');
+        if (endEl && !endEl.textContent) endEl.textContent = '— 到底了 —';
+      } else {
+        moreBtn.classList.remove('hidden');
+        moreBtn.textContent = countUnit
+          ? `加载更多（还有 ${(total() - shown).toLocaleString()} ${countUnit}）`
+          : '加载更多';
+      }
+      if (afterBatch) afterBatch(batch);
+    } finally {
+      // 无论成功/异常都恢复按钮，避免卡死在「加载中…」
+      if (busy) moreBtn.disabled = false;
     }
-    // 首批：清掉 loading 占位；备料结果为空时换成调用方给的失败占位
-    if (first && firstEmptyHtml !== undefined) listEl.innerHTML = toRender.length ? '' : firstEmptyHtml;
-    listEl.insertAdjacentHTML('beforeend', toRender.map(itemHtml).join(''));
-    if (shown >= total()) {
-      moreBtn.classList.add('hidden');
-      if (endEl && !endEl.textContent) endEl.textContent = '— 到底了 —';
-    } else {
-      moreBtn.classList.remove('hidden');
-      moreBtn.textContent = countUnit
-        ? `加载更多（还有 ${(total() - shown).toLocaleString()} ${countUnit}）`
-        : '加载更多';
-    }
-    if (afterBatch) afterBatch(batch);
   };
 
   const reset = () => { shown = 0; listEl.innerHTML = ''; };

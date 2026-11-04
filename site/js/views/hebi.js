@@ -6,21 +6,22 @@
 // 得星（2026-10-31 调整）：连对十合得一星（starsFor），此后每多合一星，即记即存偏好 hbstars；
 //   连对断（接错）即一局终了，至少合过一次的局计入 hbrounds。首页行令卡展示。
 // 出题节奏（2026-10-31）：读者答题后点「下一合」，山窗沉吟一秒（HB_BEAT_MS）再出题。
-import { app, topbar, emptyHtml, splitMingjuPair, quizOptions } from '../vcommon.js';
+import { app, topbar, emptyHtml, splitMingjuPair, quizOptions, sleep } from '../vcommon.js';
+import { setAppHTML, isCurrent, currentRenderSeq } from '../render-guard.js';
 import { pref, getMingju } from '../store.js';
 import { esc } from '../py.js';
 import { zhShow } from '../fn.js';
 
 const RECENT = 24;   // 最近出过的题不重出（题库上千对，够转一阵）
 const HB_BEAT_MS = 1000;  // 出下一合前停这一拍——读者刚答完，给口气（2026-10-31）
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-async function hebiView() {
-  app.innerHTML = topbar('合璧', { back: true }) + '<div class="loading"></div>';
+async function hebiView(seg, seq = currentRenderSeq()) {
+  setAppHTML(seq, topbar('合璧', { back: true }) + '<div class="loading"></div>');
   let rows = null;
   try { rows = await getMingju(); } catch { rows = null; }
+  if (!isCurrent(seq)) return;
   if (!Array.isArray(rows) || !rows.length) {
-    app.innerHTML = topbar('合璧', { back: true }) + emptyHtml('璧', '名句索引未就绪<br>请刷新重试');
+    setAppHTML(seq, topbar('合璧', { back: true }) + emptyHtml('璧', '名句索引未就绪<br>请刷新重试'));
     return;
   }
   const bank = [];
@@ -29,7 +30,7 @@ async function hebiView() {
     if (pair) bank.push({ up: pair[0], down: pair[1], a: r[1], t: r[2], id: r[3] });
   }
   if (!bank.length) {
-    app.innerHTML = topbar('合璧', { back: true }) + emptyHtml('璧', '题库拆解失败<br>请刷新重试');
+    setAppHTML(seq, topbar('合璧', { back: true }) + emptyHtml('璧', '题库拆解失败<br>请刷新重试'));
     return;
   }
   const downs = bank.map(b => b.down);
@@ -40,13 +41,13 @@ async function hebiView() {
   let rounds = parseInt(pref('hbrounds') || '0', 10) || 0;  // 连对断过多少回（合过至少一次的局）
   const recent = [];
 
-  app.innerHTML = topbar('合璧', { back: true }) + `
+  setAppHTML(seq, topbar('合璧', { back: true }) + `
     <div class="card">
       <h2>合璧</h2>
       <div class="section-tip" style="margin:4px 0 0">出上句，接下句——上句下句本是一璧之两半，接上即「合璧」（珠联璧合，《汉书·律历志》）。共 ${bank.length} 合。</div>
       <div class="game-score" id="hb-score"></div>
     </div>
-    <div id="hb-round"><div class="loading"></div></div>`;
+    <div id="hb-round"><div class="loading"></div></div>`);
 
   const scoreEl = document.getElementById('hb-score');
   const roundEl = document.getElementById('hb-round');
@@ -101,7 +102,7 @@ async function hebiView() {
         paintScore();
         // 出处 + 下一合（接错时绿色的就是原句）
         roundEl.querySelector('.game-foot').innerHTML =
-          `<span class="hb-src">${esc(zhShow(q.a))}《<a href="#/p/${q.id}">${esc(zhShow(q.t))}</a>》</span>` +
+          `<span class="hb-src">${esc(zhShow(q.a))}《<a href="#/p/${encodeURIComponent(String(q.id))}">${esc(zhShow(q.t))}</a>》</span>` +
           `<button type="button" class="set-toggle" id="hb-next">下一合</button>`;
         document.getElementById('hb-next').onclick = async () => {
           const nb = document.getElementById('hb-next');

@@ -190,5 +190,10 @@
     ]
   ],
   "cleanSelection 去多余空白": "移舟泊煙渚， 日暮客愁新。",
+  "cleanSelection 剔除平仄/注音/脚注噪声": {
+    "text": "移舟泊煙渚， 日暮客愁新。",
+    "removed": 5
+  },
+  "cleanSelection 噪声文案不残留": false,
   "cleanSelection 异常范围不抛错": ""
 }

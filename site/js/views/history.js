@@ -4,6 +4,7 @@
 // 数据都是纯 id / 纯词条，没有时间戳——故意的：存时间会让体积翻几倍，
 // 而这里只需要「最近读过什么」，不需要「哪天读的」。
 import { app, topbar, popupConfirm, LE_PREFIX, displayTitle, snippetOf, rowMeta, emptyHtml } from '../vcommon.js';
+import { setAppHTML, isCurrent, currentRenderSeq } from '../render-guard.js';
 import { getHistory, getSearchHist, removeHistory, removeSearchHist, clearUserData, HIS_MAX, readIdSet } from '../store.js';
 import { loadRowsByIds } from './list.js';
 import { pagedList } from './paged.js';
@@ -19,7 +20,7 @@ function titleOf(r) {
   return r.r && r.r !== r.t ? r.r + '·' + raw : raw;
 }
 
-async function historyView(seg) {
+async function historyView(seg, seq = currentRenderSeq()) {
   const isSearch = seg[0] === 's';
   const ids = isSearch ? [] : getHistory();
   const words = isSearch ? getSearchHist() : [];
@@ -29,7 +30,7 @@ async function historyView(seg) {
   const readN = rset ? ids.filter(id => rset.has(id)).length : 0;
 
   // 历史也不用顶部横条
-  app.innerHTML = `
+  setAppHTML(seq, `
     <div class="seg" id="h-seg">
       <a href="#/h" class="${isSearch ? '' : 'on'}">浏览历史</a>
       <a href="#/h/s" class="${isSearch ? 'on' : ''}">搜索历史</a>
@@ -40,7 +41,7 @@ async function historyView(seg) {
     <div class="h-foot">
       <button class="set-toggle" id="h-more">加载更多</button>
       <button class="set-toggle" id="h-clear">清空${isSearch ? '搜索' : '浏览'}历史</button>
-    </div>`;
+    </div>`);
 
   const listEl = document.getElementById('h-list');
   const tipEl = document.getElementById('h-tip');
@@ -61,13 +62,22 @@ async function historyView(seg) {
     ? '倒序排列，点词重搜；× 只删这一条。'
     : `倒序排列 · 读完 ${readN} / ${total} · 同一作品只计一次`;
 
-  // ---------- 搜索历史：纯文字行 ----------
+  // ---------- 搜索历史：纯文字行（最多 1000 条，复用 pagedList 每批 60 条，v192） ----------
   if (isSearch) {
-    moreBtn.classList.add('hidden');
-    listEl.innerHTML = words.map(q => `<div class="hrow" data-q="${esc(q)}">
-        <a class="hrow-main" href="#/s/${encodeURIComponent(q)}"><div class="hrow-t">${esc(q)}</div></a>
-        <button class="hrow-del" data-delq="${esc(q)}" aria-label="删除这条搜索记录">×</button>
-      </div>`).join('');
+    const { more } = pagedList({
+      listEl, moreBtn,
+      items: () => words,
+      total: () => words.length,
+      batchSize: PAGE,
+      itemHtml: (q) => `<div class="hrow" data-q="${esc(q)}">
+          <a class="hrow-main" href="#/s/${encodeURIComponent(q)}"><div class="hrow-t">${esc(q)}</div></a>
+          <button class="hrow-del" data-delq="${esc(q)}" aria-label="删除这条搜索记录">×</button>
+        </div>`,
+      countUnit: '条',
+      endEl: document.getElementById('h-end'),
+    });
+    moreBtn.onclick = more;
+    await more();
   } else {
     // ---------- 浏览历史：分批取记录 ----------
     const rowHtml = (id) => {
@@ -109,6 +119,8 @@ async function historyView(seg) {
     await more();
   }
 
+  if (!isCurrent(seq)) return;
+
   // ---------- 删单条（列表内原地删，不动滚动位置） ----------
   listEl.addEventListener('click', (ev) => {
     const dq = ev.target.closest('[data-delq]');
@@ -116,7 +128,7 @@ async function historyView(seg) {
       const q = dq.dataset.delq;
       if (removeSearchHist(q)) {
         dq.closest('.hrow').remove();
-        if (!getSearchHist().length) historyView(seg);
+        if (!getSearchHist().length) historyView(seg, seq);
       }
       return;
     }
@@ -126,7 +138,7 @@ async function historyView(seg) {
     if (removeHistory(id)) {
       d.closest('.hrow').remove();
       const left = getHistory();
-      if (!left.length) { historyView(seg); return; }
+      if (!left.length) { historyView(seg, seq); return; }
       // 旧版头部计数条（.topbar .act）已随 topbar 一起下线（2026-10-27），实时计数改刷这条提示
       tipEl.textContent = `倒序排列 · 读完 ${rset ? left.filter(x => rset.has(x)).length : 0} / ${left.length} · 同一作品只计一次`;
     }
@@ -137,7 +149,7 @@ async function historyView(seg) {
     popupConfirm(`清空${isSearch ? '搜索' : '浏览'}历史？`,
       `共 ${isSearch ? words.length : ids.length} 条，删除后不可恢复。`, '清空', () => {
         clearUserData(isSearch ? 'searchhist' : 'history');
-        historyView(seg);
+        historyView(seg, seq);
       });
   };
 }

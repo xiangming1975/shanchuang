@@ -327,15 +327,26 @@ eq('四时：23:59 仍夜思', PH(23, 59), 3);
 
 // ---------- 阅读队列 navCtx（2026-11-01）：remap / 去重 / 截断 / 命中与清队 ----------
 {
+  // E-8：这段原先读「未入库」的 data/dedup-remap.json.gz；新克隆（无 site/data）会拿到
+  // 空表，key0/target 退化成 NaN/undefined，断言要么红要么无意义。这里自带最小夹具：
+  // 空表时注入一条 9000001→9000002 的映射再继续，测试名带「夹具兜底」标注来源。
+  // getDedupRemap() 返回的是 store 缓存的同一对象，原地注入对 setNavCtx 内部立即可见。
   const remap = await store.getDedupRemap();
+  let tag = '';
+  if (!remap || !Object.keys(remap).length) {
+    remap['9000001'] = 9000002;
+    tag = '（夹具兜底）';
+  }
   const key0 = +Object.keys(remap)[0];          // 一个真实存在的「被删 id → 保留正文」映射
   const target = remap[key0];
   await store.setNavCtx([key0, key0, target, 5, 'abc', null, 7], '搜索结果 · 测试');
   let q = store.navCtxOf(target);
-  eq('navCtx: remap 后命中保留正文 id', !!q, true);
-  eq('navCtx: 重复项（被删 id 与其保留正文）去重', q.q.ids.filter(x => x === target).length, 1);
-  eq('navCtx: 非数字项被剔除', q.q.ids.includes('abc') || q.q.ids.includes(null), false);
-  eq('navCtx: pos 与 label', [q.pos, q.q.label], [q.q.ids.indexOf(target), '搜索结果 · 测试']);
+  eq('navCtx: remap 后命中保留正文 id' + tag, !!q, true);
+  eq('navCtx: 重复项（被删 id 与其保留正文）去重' + tag, q.q.ids.filter(x => x === target).length, 1);
+  eq('navCtx: 非数字项被剔除' + tag, q.q.ids.includes('abc') || q.q.ids.includes(null), false);
+  eq('navCtx: pos 与 label' + tag, [q.pos, q.q.label], [q.q.ids.indexOf(target), '搜索结果 · 测试']);
+  // 不假绿：被删 id 必须真的经 remap 落到保留正文，队列里不允许原样留着 key0。
+  eq('navCtx: 被删 id 已 remap（不假绿）' + tag, q.q.ids.includes(key0), false);
   eq('navCtx: 普通有效 id 在列', store.navCtxOf(5) !== null, true);
   eq('navCtx: 队列外 id 不命中', store.navCtxOf(999999999), null);
   // 截断 1000
