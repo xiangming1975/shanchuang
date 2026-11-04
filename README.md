@@ -2,7 +2,7 @@
 
 一个**纯静态**的中文古诗文阅读站：手机优先、单页应用、零照片素材（界面全 CSS + canvas 现场绘的水墨背景）。
 
-- 线上：**https://shanchuang.pages.dev**（Cloudflare Pages）
+- 线上：[shanchuang.pages.dev](https://shanchuang.pages.dev)（Cloudflare Pages）
 - 规模：**79 个集合 · 2,145,874 条**记录（全唐诗、全宋诗、全宋词、古文观止、四库、二十四史、历代诗话等）
 - 能力：标题/作者/正文搜索、拼音注音、逐字平仄、脚注弹卡、译文对照、朗诵、背诵（遗忘曲线 / 隐字自测）、摘录、分享卡、每日一诗、飞花令与接龙
 
