@@ -47,6 +47,7 @@ poetry-site/
 ├── deploy-cf.sh          Cloudflare Pages 一键发布
 ├── patch-wrangler.mjs    调高 wrangler 上传并发（默认 3 太慢）
 ├── LICENSE-DATA.md       许可（分层声明）
+├── AGENTS.md             给接手的 AI 的开工手册（git 流程、禁则、常见坑）
 └── HANDOFF.md            交接文档：架构、数据、踩坑与决策记录（最重要的一份）
 ```
 
