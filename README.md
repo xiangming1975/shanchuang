@@ -62,7 +62,10 @@ npm test                   # 407 项，约 3 秒，零依赖
 
 ### 数据快照（Release）
 
-数据以 7-Zip 分卷随 Release 分发（GitHub 单个资产上限 2 GiB，故按 1.4GB 分卷）：
+数据以 7-Zip 分卷随 Release 分发（GitHub 单个资产上限 2 GiB，故按 1.4GB 分卷）。
+
+当前快照：**[data-20261104](https://github.com/xiangming1975/shanchuang/releases/tag/data-20261104)**（2.62 GiB / 2 卷 / 13,953 文件）。
+新快照发布后，以 [Releases 页](https://github.com/xiangming1975/shanchuang/releases) 上最新的一条为准。
 
 ```powershell
 # 打包（-mx=0 = 存储模式：内部已是 .json.gz，二次压缩无收益）
