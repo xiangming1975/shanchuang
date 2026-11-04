@@ -6,8 +6,26 @@
 - 规模：**79 个集合 · 2,145,874 条**记录（全唐诗、全宋诗、全宋词、古文观止、四库、二十四史、历代诗话等）
 - 能力：标题/作者/正文搜索、拼音注音、逐字平仄、脚注弹卡、译文对照、朗诵、背诵（遗忘曲线 / 隐字自测）、摘录、分享卡、每日一诗、飞花令与接龙
 
-> 本仓库只放**源码与文档**。`site/data/` 是构建产物（2.7GB / 约 1.4 万文件），不进版本库，
-> 详见下面的「数据从哪来」。
+> 本仓库只放**源码与文档**。`site/data/` 是构建产物（2.7GB / 约 1.4 万文件），不进版本库。
+
+## 快速开始（含数据恢复）
+
+数据不在仓库里，克隆后从 Release 取一份（2.62 GiB / 2 卷）：
+
+```bash
+git clone git@github.com:xiangming1975/shanchuang.git shanchuang
+cd shanchuang
+# 从 Releases 页下载两个数据卷到当前目录（见下方「数据快照」）
+# https://github.com/xiangming1975/shanchuang/releases/tag/data-20261104
+7z x shanchuang-data-20261104.7z.001 -o.   # 解第一个卷即自动串接 → site/data/
+npm test                                    # 408 项，约 3 秒
+node server.js 3737                         # 打开 http://localhost:3737
+```
+
+- 没装 7-Zip：Windows `winget install 7zip.7zip`，macOS `brew install p7zip`，Linux `apt install p7zip-full`。
+- **不想下 2.6GB 也行**：只改前端代码的话跳过解包，`npm test` 仍可全绿（仓库内已带 4 张测试用的小表），
+  只是浏览器里取不到正文。
+- 换 Tag 换成最新一条即可，命名规则 `data-YYYYMMDD`。
 
 ## 目录结构
 
@@ -23,7 +41,7 @@ poetry-site/
 │   └── data/             ← 构建产物，不入库（只留 4 张测试用的小表）
 ├── etl/                  数据流水线
 │   └── legacy/           一次性整理脚本存档（不参与流程，供追溯）
-├── tests/                407 项断言（纯函数 / 规则 / 外壳一致性 / 状态逻辑 / 农历 / 简繁）
+├── tests/                408 项断言（纯函数 / 规则 / 外壳一致性 / 状态逻辑 / 农历 / 简繁）
 ├── server.js             零依赖静态服务器（gzip + Range）
 ├── build-home-verses.cjs 首页题诗的生成脚本
 ├── deploy-cf.sh          Cloudflare Pages 一键发布
@@ -39,7 +57,7 @@ poetry-site/
 
 ```bash
 node server.js 3737        # 打开 http://localhost:3737
-npm test                   # 407 项，约 3 秒，零依赖
+npm test                   # 408 项，约 3 秒，零依赖
 ```
 
 不要双击 `index.html`——ES modules + fetch 会被 `file://` 拦。
