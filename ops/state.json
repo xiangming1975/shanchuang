@@ -6,6 +6,14 @@
     "collections": 79,
     "rule": "以 manifest.total=2145874(214万) 为基线；低于此值视为事故，禁止发布"
   },
+  "build_policy": {
+    "rule": "重建数据必须先问用户，并说清为什么要 build（2026-11-04 用户要求，强制）",
+    "capacity_frozen": "用户不再增加数据集容量；容量锁定 214 万 / 79 集合",
+    "proofread_cadence": "勘误改为每几个月集中一次，只在那一批集中勘误时才 build",
+    "single_fix_path": "单篇改错字：改 site/data/poems/<集合>-<NNNN>.json.gz 里那条记录 + bump manifest.v，写成幂等脚本放 etl/；不要为单篇 build",
+    "bar": "说不出「哪条数据错了、错在哪、为什么必须重建而不能定点改」就不要发起 build",
+    "updatedAt": "2026-11-04T06:45:00Z"
+  },
   "build": {
     "script": "etl/build.js",
     "collections": 79,
